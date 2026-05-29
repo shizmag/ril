@@ -128,13 +128,15 @@ class CustomMarkdownConverter(markdownify.MarkdownConverter):
         return self.convert_i(el, text, parent_tags)
 
     def convert_del(self, el, text, parent_tags):
-        return text
+        if not text or not text.strip():
+            return text
+        return f"~~{text.strip()}~~"
 
     def convert_strike(self, el, text, parent_tags):
-        return text
+        return self.convert_del(el, text, parent_tags)
 
     def convert_s(self, el, text, parent_tags):
-        return text
+        return self.convert_del(el, text, parent_tags)
 
     def convert_figcaption(self, el, text, parent_tags):
         if not text or not text.strip():
@@ -191,6 +193,90 @@ def clean_and_decode_url(url: str) -> str:
         return decoded
     except Exception:
         return url
+def extract_real_image_src(img) -> Optional[str]:
+    """Extract actual image source from lazy loading attributes or standard src."""
+    src_attrs = [
+        "data-src", "data-srcset", "data-original", "data-lazy-src",
+        "srcset", "src"
+    ]
+    for attr in src_attrs:
+        val = img.get(attr)
+        if val:
+            val = val.strip()
+            if attr in ("srcset", "data-srcset"):
+                parts = [p.strip().split()[0] for p in val.split(",") if p.strip()]
+                if parts:
+                    val = parts[-1]
+            if "data:image/gif;base64,R0lGODlhAQ" in val or "transparent.gif" in val:
+                continue
+            return val
+    return None
+
+
+def merge_split_paragraphs(soup: BeautifulSoup) -> None:
+    """
+    Finds paragraphs that were split by inline elements (like links or formatting tags)
+    at the block level, and merges them back into a single paragraph.
+    """
+    p_tags = soup.find_all("p")
+    decomposed = set()
+    
+    inline_tag_names = {
+        "a", "span", "b", "strong", "i", "em", "code", "del", "strike", 
+        "s", "sub", "sup", "ins", "mark", "cite", "q", "dfn", "abbr"
+    }
+    
+    junk_symbol_pattern = re.compile(r'^\[?[→←▲▼⇒⇐≫≪•«»<>–—\s]+\]?$')
+    junk_text_pattern = re.compile(
+        r'^\[?(Далее|Назад|Читать далее|Дальше|Next|Prev|Previous|Back|Read more|Share|Поделиться|vk|vkontakte|twitter|facebook|telegram|instagram|linkedin|odnoklassniki)\]?$',
+        re.IGNORECASE
+    )
+    
+    for p in p_tags:
+        if p in decomposed:
+            continue
+            
+        inline_siblings = []
+        next_sib = p.next_sibling
+        
+        while next_sib:
+            if next_sib.name is None:  # Text node
+                inline_siblings.append(next_sib)
+            elif next_sib.name in inline_tag_names:
+                inline_siblings.append(next_sib)
+            else:
+                break
+            next_sib = next_sib.next_sibling
+            
+        if next_sib and next_sib.name == "p" and next_sib not in decomposed:
+            has_meaningful_content = False
+            full_text = []
+            
+            for sib in inline_siblings:
+                if sib.name is None:
+                    txt = str(sib)
+                    full_text.append(txt)
+                    if txt.strip():
+                        has_meaningful_content = True
+                else:
+                    has_meaningful_content = True
+                    full_text.append(sib.get_text())
+                    
+            if not has_meaningful_content:
+                continue
+                
+            combined_text = "".join(full_text).strip()
+            if junk_symbol_pattern.match(combined_text) or junk_text_pattern.match(combined_text):
+                continue
+                
+            # Perform merge
+            for sib in inline_siblings:
+                p.append(sib)
+            for child in list(next_sib.children):
+                p.append(child)
+                
+            decomposed.add(next_sib)
+            next_sib.decompose()
 
 
 def preprocess_html(html: str) -> str:
@@ -215,11 +301,32 @@ def preprocess_html(html: str) -> str:
         if not tag.has_attr("class") and not tag.has_attr("id") and not tag.has_attr("style"):
             tag.unwrap()
             
-    # 4. Remove empty paragraphs and empty blockquotes
+    # 4. Remove empty paragraphs, empty blockquotes, and block elements containing only navigation junk
+    junk_block_pattern = re.compile(r'^\[?[→←▲▼⇒⇐≫≪•«»<>–—\s]+\]?$')
     for tag in soup.find_all(["p", "blockquote", "h1", "h2", "h3", "h4", "h5", "h6"]):
         text = tag.get_text().replace('\xa0', ' ').replace('&nbsp;', ' ').strip()
-        if not text and not tag.find_all():
+        if (not text and not tag.find_all()) or junk_block_pattern.match(text):
             tag.decompose()
+            
+    # 5. Wrap loose block-level links in <p> tags so they are processed as separate blocks/paragraphs
+    block_parents = {"div", "body", "section", "article", "html", "[document]"}
+    for a in soup.find_all("a"):
+        parent = a.parent
+        is_loose = True
+        while parent:
+            if parent.name in {"p", "h1", "h2", "h3", "h4", "h5", "h6", "li", "blockquote", "td", "th"}:
+                is_loose = False
+                break
+            if parent.name in block_parents:
+                parent = parent.parent
+            else:
+                is_loose = False
+                break
+        if is_loose:
+            a.wrap(soup.new_tag("p"))
+
+    # 6. Merge split paragraphs
+    merge_split_paragraphs(soup)
             
     return str(soup)
 
@@ -230,7 +337,21 @@ def collapse_links(md: str) -> str:
         text = match.group(1)
         url = match.group(2)
         clean_text = re.sub(r'\s+', ' ', text).strip()
-        clean_url = re.sub(r'\s+', '', url).strip()
+        
+        # Check if there is a title part inside the URL parenthesis (e.g. url "title")
+        url_stripped = url.strip()
+        quote_match = re.search(r'["\']', url_stripped)
+        if quote_match:
+            quote_idx = quote_match.start()
+            url_part = url_stripped[:quote_idx].strip()
+            title_part = url_stripped[quote_idx:].strip()
+            
+            clean_url_part = re.sub(r'\s+', '', url_part)
+            clean_title_part = re.sub(r'\s+', ' ', title_part)
+            clean_url = f'{clean_url_part} {clean_title_part}'
+        else:
+            clean_url = re.sub(r'\s+', '', url_stripped)
+            
         return f"[{clean_text}]({clean_url})"
     return re.sub(r'\[([^\]]*?)\]\s*\(\s*([^\)]*?)\s*\)', replace_link, md, flags=re.DOTALL)
 
@@ -296,9 +417,9 @@ def fix_lists_and_links(md: str) -> str:
 
 def fix_formatting_punctuation(md: str) -> str:
     """Fix spaces around bold text, italics, links, and clean up punctuation placement."""
-    # 1. Move punctuation from the end of formatting to the outside
-    md = re.sub(r'(\*\*|\*|__|_)([^\*\n]+?)([.,!?;:]+)\1', r'\1\2\1\3', md)
-    md = re.sub(r'\[([^\]\n]+?)([.,!?;:])\]\(([^\)]+?)\)', r'[\1](\3)\2', md)
+    # 1. Move punctuation from the end of formatting to the outside (excluding ! and ? to preserve titles/exclamations)
+    md = re.sub(r'(\*\*|\*|__|_)([^\*\n]+?)([.,;:]+)\1', r'\1\2\1\3', md)
+    md = re.sub(r'\[([^\]\n]+?)([.,;:])\]\(([^\)]+?)\)', r'[\1](\3)\2', md)
     
     # 2. Collapse duplicate punctuation but keep ellipsis
     md = md.replace('...', '…')
@@ -306,7 +427,12 @@ def fix_formatting_punctuation(md: str) -> str:
     md = md.replace('…', '...')
     
     # 3. Fix spacing around punctuation and formatting/links
-    md = re.sub(r'(\b\w+(?:\*\*|\*|__|_)?)([.,!?;:])(\[|\*\*|\*)', r'\1\2 \3', md)
+    def fix_punctuation_spacing(match):
+        word, punc, bracket_or_star = match.groups()
+        if punc == '!' and bracket_or_star == '[':
+            return f"{word} {punc}{bracket_or_star}"
+        return f"{word}{punc} {bracket_or_star}"
+    md = re.sub(r'(\b\w+(?:\*\*|\*|__|_)?)([.,!?;:])(\[|\*\*|\*)', fix_punctuation_spacing, md)
     
     # 4. Fix sticking bold/italic/links to adjacent words using strict boundaries
     md = re.sub(r'([a-zA-Zа-яА-ЯёЁ0-9])(?<!\*)\*\*([^\*\n]+?)(?<!\*)\*\*(?!\*)', r'\1 **\2**', md)
@@ -317,6 +443,10 @@ def fix_formatting_punctuation(md: str) -> str:
     # Links sticking to words
     md = re.sub(r'(\]\]*\([^\)]+?\))([a-zA-Zа-яА-ЯёЁ0-9])', r'\1 \2', md)
     md = re.sub(r'([a-zA-Zа-яА-ЯёЁ0-9])(\[([^\]]+?)\]\([^\)]+?\))', r'\1 \2', md)
+    
+    # Inline code sticking to words
+    md = re.sub(r'(`[^`\n]+?`)([a-zA-Zа-яА-ЯёЁ0-9])', r'\1 \2', md)
+    md = re.sub(r'([a-zA-Zа-яА-ЯёЁ0-9])(`[^`\n]+?`)', r'\1 \2', md)
     
     # 5. Fix sticking formatting/links to each other
     md = re.sub(r'(?<!\*)\*\*([^\*\n]+?)(?<!\*)\*\*(\[)', r'**\1** \2', md)
@@ -439,11 +569,10 @@ def clean_markdown(markdown_content: str) -> str:
                 
             text = '\n'.join(cleaned_lines)
             
-            text = re.sub(r'~~(.*?)~~', r'\1', text)
             text = collapse_links(text)
+            text = strip_navigation_junk(text)
             text = fix_lists_and_links(text)
             text = fix_formatting_punctuation(text)
-            text = strip_navigation_junk(text)
             text = normalize_blockquotes(text)
             text = fix_header_spacing(text)
             
@@ -490,6 +619,7 @@ class MarkdownConverter(BaseConverter):
     async def _download_images(self, html_content: str, base_url: str, article_slug: str) -> str:
         """
         Finds all image tags, downloads the images concurrently, and rewrites the image src.
+        Handles lazy loading attributes dynamically with rate-limiting and browser emulation.
         """
         soup = BeautifulSoup(html_content, "lxml")
         img_tags = soup.find_all("img")
@@ -505,15 +635,20 @@ class MarkdownConverter(BaseConverter):
         download_tasks = []
         img_rewrites = []
         
+        # Limit image downloads to 3 concurrent requests to prevent triggering 429 Too Many Requests
+        semaphore = asyncio.Semaphore(3)
+        
         async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
             for idx, img in enumerate(img_tags):
-                src = img.get("src")
+                src = extract_real_image_src(img)
                 if not src:
                     continue
                 
+                # Update HTML attribute immediately so markdownify sees the real URL
+                img["src"] = src
+                
                 # Check for base64 encoded images
                 if src.startswith("data:image/"):
-                    # Process inline base64 image immediately
                     filename = self._save_base64_image(src, article_slug, idx)
                     if filename:
                         img["src"] = f"images/{article_slug}/{filename}"
@@ -525,32 +660,29 @@ class MarkdownConverter(BaseConverter):
                 # Generate unique filename based on URL hash
                 url_hash = hashlib.md5(absolute_url.encode("utf-8")).hexdigest()
                 
-                # Schedule download task
-                task = self._download_single_image(client, absolute_url, article_img_dir, url_hash)
+                # Schedule download task with Semaphore and referer
+                task = self._download_single_image(client, absolute_url, article_img_dir, url_hash, semaphore, base_url)
                 download_tasks.append(task)
-                img_rewrites.append((img, task))
+                img_rewrites.append((img, task, absolute_url))
             
             # Execute all downloads concurrently
-            results = await asyncio.gather(*download_tasks, return_exceptions=True)
-            
-            # Rewrite image sources with relative paths
-            for img, task in img_rewrites:
-                # Find index of this task in download_tasks to get the result
-                idx = download_tasks.index(task)
-                result = results[idx]
+            if download_tasks:
+                results = await asyncio.gather(*download_tasks, return_exceptions=True)
                 
-                if isinstance(result, Exception):
-                    logger.warning(f"Failed to download image: {result}")
-                    # Leave image source as is (or absolute URL if it was relative)
-                    src = img.get("src")
-                    if src and not src.startswith("data:"):
-                        img["src"] = urljoin(base_url, src)
-                elif result:
-                    # Successfully saved locally, update the src to relative path
-                    # E.g. 'images/2026-05-29_slug/abcd123.jpg'
-                    relative_path = f"images/{article_slug}/{result}"
-                    img["src"] = relative_path
+                # Rewrite image sources with relative paths
+                for img, task, absolute_url in img_rewrites:
+                    idx = download_tasks.index(task)
+                    result = results[idx]
                     
+                    if isinstance(result, Exception) or not result:
+                        logger.warning(f"Failed to download image {absolute_url}: {result if isinstance(result, Exception) else 'None'}")
+                        # Fallback to the absolute URL
+                        img["src"] = absolute_url
+                    else:
+                        # Successfully saved locally, update the src to relative path
+                        relative_path = f"images/{article_slug}/{result}"
+                        img["src"] = relative_path
+                        
         return str(soup)
 
     async def _download_single_image(
@@ -558,39 +690,78 @@ class MarkdownConverter(BaseConverter):
         client: httpx.AsyncClient,
         url: str,
         save_dir: Path,
-        url_hash: str
+        url_hash: str,
+        semaphore: asyncio.Semaphore,
+        referer: Optional[str] = None
     ) -> Optional[str]:
         """
-        Download a single image and save it to the specified folder.
+        Download a single image under semaphore concurrency limits and save it.
+        Features a hybrid User-Agent and automatic 429 rate-limit retries.
         Returns the filename if successful, otherwise None.
         """
-        try:
-            # Add basic headers to prevent bot-detection on image requests
-            headers = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)"}
-            response = await client.get(url, headers=headers)
-            response.raise_for_status()
-            
-            content_type = response.headers.get("content-type", "")
-            ext = self._get_extension_from_mime(content_type)
-            
-            if not ext:
-                # Try getting extension from path
-                parsed_url = urlparse(url)
-                ext = Path(parsed_url.path).suffix.lower()
-                if not ext or len(ext) > 5:
-                    ext = ".jpg"  # Default fallback
-            
-            filename = f"{url_hash}{ext}"
-            file_path = save_dir / filename
-            
-            # Save bytes to disk
-            with open(file_path, "wb") as f:
-                f.write(response.content)
+        async with semaphore:
+            try:
+                # Hybrid User-Agent bypasses Cloudflare bot protection and respects Wikipedia's API policies
+                headers = {
+                    "User-Agent": (
+                        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                        "AppleWebKit/537.36 (KHTML, like Gecko) "
+                        "Chrome/122.0.0.0 Safari/537.36 (ReadItLaterBot/1.0; contact: support@readitlater-app.local)"
+                    ),
+                    "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
+                    "Accept-Language": "en-US,en;q=0.9,ru;q=0.8",
+                }
+                if referer:
+                    headers["Referer"] = referer
+                    
+                # Small delay to throttle requests to the same host
+                await asyncio.sleep(0.15)
                 
-            return filename
-        except Exception as e:
-            logger.error(f"Error downloading image {url}: {e}")
-            return None
+                # Fetch image with retry mechanism for rate limits (429)
+                retries = 3
+                backoff = 0.5
+                response = None
+                
+                for attempt in range(retries):
+                    response = await client.get(url, headers=headers)
+                    if response.status_code == 429:
+                        retry_after = response.headers.get("Retry-After")
+                        try:
+                            delay = float(retry_after) if retry_after else backoff
+                        except ValueError:
+                            delay = backoff
+                        logger.warning(f"Rate limited (429) for image {url}. Retrying in {delay}s (Attempt {attempt+1}/{retries})...")
+                        await asyncio.sleep(delay)
+                        backoff *= 2
+                        continue
+                    break
+                
+                if not response:
+                    raise Exception("No response received from image server")
+                    
+                response.raise_for_status()
+                
+                content_type = response.headers.get("content-type", "")
+                ext = self._get_extension_from_mime(content_type)
+                
+                if not ext:
+                    # Try getting extension from path
+                    parsed_url = urlparse(url)
+                    ext = Path(parsed_url.path).suffix.lower()
+                    if not ext or len(ext) > 5:
+                        ext = ".jpg"  # Default fallback
+                
+                filename = f"{url_hash}{ext}"
+                file_path = save_dir / filename
+                
+                # Save bytes to disk
+                with open(file_path, "wb") as f:
+                    f.write(response.content)
+                    
+                return filename
+            except Exception as e:
+                logger.error(f"Error downloading image {url}: {e}")
+                return None
 
     def _save_base64_image(self, base64_str: str, article_slug: str, idx: int) -> Optional[str]:
         """

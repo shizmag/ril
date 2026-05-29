@@ -110,11 +110,15 @@ async def test_download_single_image_mime_fallbacks(mocker, setup_test_environme
     client = MagicMock()
     client.get = AsyncMock(return_value=mock_resp)
     
+    import asyncio
+    sem = asyncio.Semaphore(1)
+    
     filename = await converter._download_single_image(
         client,
         "https://example.com/image.webp",
         img_dir,
-        "hash1"
+        "hash1",
+        sem
     )
     assert filename == "hash1.webp"
     
@@ -122,7 +126,8 @@ async def test_download_single_image_mime_fallbacks(mocker, setup_test_environme
         client,
         "https://example.com/image-no-ext",
         img_dir,
-        "hash2"
+        "hash2",
+        sem
     )
     assert filename2 == "hash2.jpg"
 
@@ -192,11 +197,9 @@ async def test_markdown_converter_premium_formatting(setup_test_environment):
     
     # Line-breaks in link text collapsed
     assert "[подозрительная ссылка удалена](https://example.com/some-path)" in res_1
-    # No strikethrough markdown
-    assert "~~лопату~~" not in res_1
-    assert "лопату" in res_1
-    assert "~~другие~~" not in res_1
-    assert "другие" in res_1
+    # Strikethrough markdown preserved
+    assert "~~лопату~~" in res_1
+    assert "~~другие~~" in res_1
     # Junk stripped
     assert "→" not in res_1
     assert "Читать далее" not in res_1
@@ -247,5 +250,57 @@ async def test_markdown_converter_premium_formatting(setup_test_environment):
     )
     res_8 = await converter.convert(html_8, "https://example.com", "test-premium-8")
     assert "* [Поиск истоков](#1)\n* [Становление](#2)" in res_8
+
+
+@pytest.mark.asyncio
+async def test_markdown_converter_lazy_loaded_images(mocker, setup_test_environment):
+    from ril.converters import extract_real_image_src
+    from bs4 import BeautifulSoup
+    
+    # 1. Test unit extraction of lazy loaded images
+    html_img_lazy = (
+        '<img data-src="https://example.com/lazy1.png" src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7" />'
+    )
+    soup1 = BeautifulSoup(html_img_lazy, "lxml")
+    img1 = soup1.find("img")
+    assert extract_real_image_src(img1) == "https://example.com/lazy1.png"
+    
+    # 2. Test src attribute rewrite during Markdown conversion
+    converter = MarkdownConverter()
+    
+    # Mock httpx image download
+    mock_response = MagicMock()
+    mock_response.content = b"fake-bytes"
+    mock_response.headers = {"content-type": "image/png"}
+    mock_response.raise_for_status = MagicMock()
+    mocker.patch("httpx.AsyncClient.get", return_value=mock_response)
+    
+    html = (
+        '<div>'
+        '  <img data-src="https://example.com/lazy-load-image.png" src="placeholder.gif" alt="Lazy Image" />'
+        '</div>'
+    )
+    
+    res = await converter.convert(html, "https://example.com", "test-lazy-image")
+    # Verified that placeholder is bypassed and real image path is resolved
+    assert "images/test-lazy-image/" in res
+    assert ".png" in res
+
+
+def test_fix_formatting_punctuation_image_spacing():
+    from ril.converters import clean_markdown
+    
+    # 1. Image sticking to word should get a space before the '!', but keep '![' together
+    input_md = "на каждом временном шаге![t](images/test/formula.svg) новый элемент"
+    output_md = clean_markdown(input_md)
+    assert "шаге ![t](images/test/formula.svg)" in output_md
+    assert "шаге! [t]" not in output_md
+    
+    # 2. Normal punctuation followed by link should have space after '.' and before '['
+    input_md_2 = "подозрительно.[ссылка](http://example.com) кликай"
+    output_md_2 = clean_markdown(input_md_2)
+    assert "подозрительно. [ссылка](http://example.com)" in output_md_2
+
+
 
 
