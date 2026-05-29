@@ -126,3 +126,126 @@ async def test_download_single_image_mime_fallbacks(mocker, setup_test_environme
     )
     assert filename2 == "hash2.jpg"
 
+@pytest.mark.asyncio
+async def test_markdown_converter_quotes_and_spacing(setup_test_environment):
+    converter = MarkdownConverter()
+    
+    html = (
+        "<blockquote>\n"
+        "  <p>First paragraph in quote.</p>\n"
+        "  <p>Second paragraph in quote.</p>\n"
+        "</blockquote>\n"
+        "<p>This is a paragraph\n"
+        "with internal newlines.</p>\n"
+        "<h2>Heading with spaces</h2>"
+    )
+    
+    result = await converter.convert(html, "https://example.com", "test-spacing")
+    
+    # 1. Blockquote formatted correctly without leading/trailing empty > lines
+    assert "> First paragraph in quote." in result
+    assert ">" in result
+    assert "> Second paragraph in quote." in result
+    assert "\n> \n" not in result
+    
+    # 2. Paragraph collapsed single newlines
+    assert "This is a paragraph with internal newlines." in result
+    
+    # 3. Heading wrapped nicely
+    assert "## Heading with spaces" in result
+
+@pytest.mark.asyncio
+async def test_markdown_converter_advanced_formatting(setup_test_environment):
+    converter = MarkdownConverter()
+    
+    html = (
+        "<p>Привет &nbsp; мир! Это тест\u200b форматирования .</p>"
+        "<p>Ссылка с трекером: <a href=\"https://example.com/page?utm_source=telegram&utm_medium=cpc&id=123\">кликни сюда</a>.</p>"
+        "<p>Пробелы ( внутри скобок ) и перед знаками препинания , верно ?</p>"
+        "<p>Тире - это классный символ , или даже -- вот так.</p>"
+        "<p></p>"
+        "<iframe src=\"https://www.youtube.com/embed/dQw4w9WgXcQ\" title=\"Видео с разбором\"></iframe>"
+    )
+    
+    result = await converter.convert(html, "https://example.com", "test-advanced-formatting")
+    
+    assert "Привет мир! Это тест форматирования." in result
+    assert "[кликни сюда](https://example.com/page?id=123)" in result
+    assert "Пробелы (внутри скобок) and перед знаками препинания, верно?" in result or "Пробелы (внутри скобок) и перед знаками препинания, верно?" in result
+    assert "Тире — это классный символ, или даже — вот так." in result
+    assert "🔗 [Видео с разбором](https://www.youtube.com/embed/dQw4w9WgXcQ)" in result
+
+
+@pytest.mark.asyncio
+async def test_markdown_converter_premium_formatting(setup_test_environment):
+    converter = MarkdownConverter()
+    
+    # 1. Line-break links & 7. Strikethrough & 6. Navigation junk
+    html_1 = (
+        "<p>Some text before [подозрительная<br>ссылка<br>"
+        "удалена](https://example.com/some-path)<br>"
+        "<s>лопату</s> and ~~другие~~ tools.<br>"
+        "→<br>"
+        "Читать далее</p>"
+    )
+    res_1 = await converter.convert(html_1, "https://example.com", "test-premium-1")
+    
+    # Line-breaks in link text collapsed
+    assert "[подозрительная ссылка удалена](https://example.com/some-path)" in res_1
+    # No strikethrough markdown
+    assert "~~лопату~~" not in res_1
+    assert "лопату" in res_1
+    assert "~~другие~~" not in res_1
+    assert "другие" in res_1
+    # Junk stripped
+    assert "→" not in res_1
+    assert "Читать далее" not in res_1
+
+    # 2. Cyrillic double percent-encoded URL and tracking params
+    html_2 = '<a href="https://example.com/224909-istoriju-pishut-pobediteli...%25D0%25B8%25D0%25B8?utm_source=telegram&fbclid=abc">ссылка</a>'
+    res_2 = await converter.convert(html_2, "https://example.com", "test-premium-2")
+    assert "[ссылка](https://example.com/224909-istoriju-pishut-pobediteli...ии)" in res_2
+
+    # 3. Punctuation spacing and sticking formatting
+    html_3 = (
+        "<p>Aaron Courville.<strong>Источник</strong>.</p>"
+        "<p>Aaron Courville.<strong>Источник</strong><a href=\"/url\">Link</a></p>"
+        "<p>Some<strong>bold</strong>word and word<strong>bold</strong>.</p>"
+        "<p><a href=\"/url\">Источник.</a></p>"
+    )
+    res_3 = await converter.convert(html_3, "https://example.com", "test-premium-3")
+    assert "Aaron Courville. **Источник**." in res_3
+    assert "Aaron Courville. **Источник** [Link]" in res_3
+    assert "Some **bold** word" in res_3
+    assert "word **bold**." in res_3
+    assert "[Источник](/url)." in res_3
+
+    # 4. Blockquotes and blank lines
+    html_4 = (
+        "<blockquote>"
+        "<p>Цитата часть 1</p>"
+        "<p>Цитата часть 2</p>"
+        "</blockquote>"
+    )
+    res_4 = await converter.convert(html_4, "https://example.com", "test-premium-4")
+    # Inside blockquote empty line should have '>' prefix
+    assert "> Цитата часть 1\n>\n> Цитата часть 2" in res_4
+
+    # 5. Header spacing
+    html_5 = (
+        "<p>Text before</p>"
+        "<h2>Header 1</h2>"
+        "<p>Text after</p>"
+    )
+    res_5 = await converter.convert(html_5, "https://example.com", "test-premium-5")
+    assert "Text before\n\n## Header 1\n\nText after" in res_5
+
+    # 8. List formation from consecutive link-only lines
+    html_8 = (
+        "<p><a href=\"#1\">Поиск истоков</a></p>"
+        "<p><a href=\"#2\">Становление</a></p>"
+    )
+    res_8 = await converter.convert(html_8, "https://example.com", "test-premium-8")
+    assert "* [Поиск истоков](#1)\n* [Становление](#2)" in res_8
+
+

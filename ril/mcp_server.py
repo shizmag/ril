@@ -195,6 +195,34 @@ def get_article_content(article_id: int) -> str:
     except Exception as e:
         return f"Error reading article content: {str(e)}"
 
+@mcp.tool()
+def delete_article(article_id: int) -> str:
+    """
+    Delete an article by its ID from the library and database, clearing its markdown and images.
+    
+    Args:
+        article_id: The numeric ID of the article to delete.
+    """
+    try:
+        success = core.delete_article(article_id)
+        if success:
+            return f"Successfully deleted article with ID {article_id}."
+        else:
+            return f"Article with ID {article_id} not found."
+    except Exception as e:
+        return f"Error deleting article: {str(e)}"
+
+@mcp.tool()
+def reset_library() -> str:
+    """
+    Completely clear the library, deleting all saved articles, markdown files, images, and resetting the database.
+    """
+    try:
+        core.reset_library()
+        return "Library reset successfully. All articles and files deleted."
+    except Exception as e:
+        return f"Error resetting library: {str(e)}"
+
 if __name__ == "__main__":
     # FastMCP run takes transport="stdio" when run as an MCP server
     mcp.run(transport="stdio")

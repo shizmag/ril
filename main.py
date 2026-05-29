@@ -90,6 +90,33 @@ def handle_unread(args):
     else:
         print(f"Article {args.id} not found.")
 
+def handle_delete(args):
+    """Delete an article by ID."""
+    try:
+        success = core.delete_article(args.id)
+        if success:
+            print(f"Article {args.id} successfully deleted.")
+        else:
+            print(f"Article {args.id} not found.")
+    except Exception as e:
+        print(f"Error deleting article: {e}", file=sys.stderr)
+        sys.exit(1)
+
+def handle_reset(args):
+    """Reset the library (deletes all articles and files)."""
+    if not args.yes:
+        confirm = input("⚠️ WARNING: This will delete ALL saved articles, files, and database records. Are you sure? [y/N]: ")
+        if confirm.lower().strip() not in ('y', 'yes'):
+            print("Aborted.")
+            return
+            
+    try:
+        core.reset_library()
+        print("Library and database successfully cleared.")
+    except Exception as e:
+        print(f"Error resetting library: {e}", file=sys.stderr)
+        sys.exit(1)
+
 def handle_bot(args):
     """Run the Telegram Bot."""
     from ril.telegram_bot import run_bot
@@ -136,6 +163,14 @@ def main():
     parser_unread = subparsers.add_parser("unread", help="Mark article as unread")
     parser_unread.add_argument("id", type=int, help="Article ID")
     
+    # delete command
+    parser_delete = subparsers.add_parser("delete", help="Delete an article from the library and database")
+    parser_delete.add_argument("id", type=int, help="Article ID")
+    
+    # reset command
+    parser_reset = subparsers.add_parser("reset", help="Reset library and database (deletes all articles)")
+    parser_reset.add_argument("--yes", action="store_true", help="Skip confirmation prompt")
+    
     args = parser.parse_args()
     
     # Ensure database is initialized before any operation
@@ -150,7 +185,9 @@ def main():
         "stats": handle_stats,
         "list": handle_list,
         "read": handle_read,
-        "unread": handle_unread
+        "unread": handle_unread,
+        "delete": handle_delete,
+        "reset": handle_reset
     }
     
     commands[args.command](args)

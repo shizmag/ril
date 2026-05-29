@@ -6,7 +6,7 @@ import logging
 import asyncio
 from abc import ABC, abstractmethod
 from typing import Optional, Tuple
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urljoin, urlparse, parse_qs, urlunparse, urlencode, unquote
 from pathlib import Path
 import httpx
 from bs4 import BeautifulSoup
@@ -36,6 +36,427 @@ class BaseConverter(ABC):
         pass
 
 
+class CustomMarkdownConverter(markdownify.MarkdownConverter):
+    """
+    Custom HTML-to-Markdown converter subclass of markdownify.
+    Ensures blockquotes, paragraphs, headings, lists, code, figures, captions,
+    iframes, and text styling are beautifully and cleanly formatted.
+    """
+    def convert_blockquote(self, el, text, parent_tags):
+        if not text or not text.strip():
+            return ''
+        
+        # Clean up leading/trailing newlines/spaces inside the blockquote
+        clean_text = text.strip()
+        
+        # Collapse multiple empty lines to a single empty line
+        clean_text = re.sub(r'\n{3,}', '\n\n', clean_text)
+        
+        lines = []
+        for line in clean_text.split('\n'):
+            stripped_line = line.strip()
+            # Clean up existing blockquote prefix if present
+            if stripped_line.startswith('>'):
+                stripped_line = stripped_line[1:].strip()
+            if stripped_line:
+                lines.append(f"> {stripped_line}")
+            else:
+                lines.append(">")
+        
+        return '\n' + '\n'.join(lines) + '\n'
+
+    def convert_p(self, el, text, parent_tags):
+        if not text or not text.strip():
+            return ''
+            
+        clean_text = text.replace('\r\n', '\n')
+        # Replace newlines with spaces first to prevent text wrapping issues,
+        # but preserve markdown hard line breaks (two spaces followed by newline)
+        clean_text = re.sub(r'(?<!  )\n', ' ', clean_text)
+        
+        # Collapse consecutive spaces/tabs that are not preceding a newline
+        clean_text = re.sub(r'[ \t]+(?!\n)', ' ', clean_text)
+        # Normalize trailing spaces before newlines: keep exactly two for markdown breaks, remove single spaces
+        clean_text = re.sub(r' {2,}\n', '  \n', clean_text)
+        clean_text = re.sub(r'(?<! ) \n', '\n', clean_text)
+        
+        clean_text = clean_text.strip()
+        if not clean_text:
+            return ''
+            
+        return '\n\n' + clean_text + '\n\n'
+
+
+    def convert_hn(self, n, el, text, parent_tags):
+        header_text = super().convert_hn(n, el, text, parent_tags)
+        if not header_text or not header_text.strip():
+            return ''
+        return '\n\n' + header_text.strip() + '\n\n'
+
+    def convert_li(self, el, text, parent_tags):
+        if not text:
+            return ''
+        # Strip newlines from list items to keep the list layout compact
+        return super().convert_li(el, text.strip('\n'), parent_tags)
+
+    def convert_br(self, el, text, parent_tags):
+        # Markdown standard for a hard line break is two spaces followed by a newline
+        return '  \n'
+
+    def convert_code(self, el, text, parent_tags):
+        if not text:
+            return ''
+        if 'pre' in parent_tags:
+            return text
+        # Collapse newlines/spaces for inline code to keep it inline
+        return '`' + text.replace('\n', ' ').strip() + '`'
+
+    def convert_b(self, el, text, parent_tags):
+        if not text or not text.strip():
+            return text
+        return f"**{text.strip()}**"
+
+    def convert_strong(self, el, text, parent_tags):
+        return self.convert_b(el, text, parent_tags)
+
+    def convert_i(self, el, text, parent_tags):
+        if not text or not text.strip():
+            return text
+        return f"*{text.strip()}*"
+
+    def convert_em(self, el, text, parent_tags):
+        return self.convert_i(el, text, parent_tags)
+
+    def convert_del(self, el, text, parent_tags):
+        return text
+
+    def convert_strike(self, el, text, parent_tags):
+        return text
+
+    def convert_s(self, el, text, parent_tags):
+        return text
+
+    def convert_figcaption(self, el, text, parent_tags):
+        if not text or not text.strip():
+            return ''
+        return f"\n\n*Рисунок: {text.strip()}*\n\n"
+
+    def convert_iframe(self, el, text, parent_tags):
+        src = el.get('src')
+        if not src:
+            return ''
+        title = el.get('title', 'Встроенный контент')
+        return f"\n\n🔗 [{title}]({src})\n\n"
+
+
+def clean_url_tracking(url: str) -> str:
+    """Strip analytics/UTM tracking parameters from a URL."""
+    if not url:
+        return url
+    try:
+        parsed = urlparse(url)
+        if parsed.query:
+            query_params = parse_qs(parsed.query)
+            # List of common tracking parameters to strip
+            tracking_keys = [
+                'utm_source', 'utm_medium', 'utm_campaign', 'utm_term', 'utm_content',
+                'fbclid', 'gclid', 'yclid', 'msclkid', 'mc_cid', 'mc_eid', 'referrer'
+            ]
+            for key in list(query_params.keys()):
+                if key.lower() in tracking_keys or key.lower().startswith('utm_'):
+                    query_params.pop(key, None)
+            new_query = urlencode(query_params, doseq=True)
+            parsed = parsed._replace(query=new_query)
+        return urlunparse(parsed)
+    except Exception:
+        return url
+
+
+def clean_and_decode_url(url: str) -> str:
+    """Clean tracking params and percent-decode double-encoded Cyrillic URLs."""
+    if not url:
+        return url
+    try:
+        url = clean_url_tracking(url)
+        # Decode percent encoding
+        decoded = unquote(url, errors='ignore')
+        if '%' in decoded:
+            decoded = unquote(decoded, errors='ignore')
+        
+        # Only strip if it is just '#' or '%23'
+        if decoded.strip() == '#' or decoded.strip() == '%23':
+            return ''
+            
+        decoded = decoded.replace(' ', '%20')
+        return decoded
+    except Exception:
+        return url
+
+
+def preprocess_html(html: str) -> str:
+    """Preprocess HTML to decompose useless elements, strip tracking, and unwrap meaningless tags."""
+    soup = BeautifulSoup(html, "lxml")
+    
+    # 1. Strip useless tags completely
+    for tag in soup.find_all(["script", "style", "meta", "noscript", "svg"]):
+        tag.decompose()
+        
+    # 2. Clean links and remove tracking params
+    for a in soup.find_all("a"):
+        href = a.get("href")
+        if href:
+            a["href"] = clean_and_decode_url(href)
+        # Decompose empty links with no text or inner tags
+        if not a.get_text(strip=True) and not a.find_all():
+            a.decompose()
+            
+    # 3. Clean up span/div wrappers that have no attributes/styling
+    for tag in soup.find_all(["span", "div"]):
+        if not tag.has_attr("class") and not tag.has_attr("id") and not tag.has_attr("style"):
+            tag.unwrap()
+            
+    # 4. Remove empty paragraphs and empty blockquotes
+    for tag in soup.find_all(["p", "blockquote", "h1", "h2", "h3", "h4", "h5", "h6"]):
+        text = tag.get_text().replace('\xa0', ' ').replace('&nbsp;', ' ').strip()
+        if not text and not tag.find_all():
+            tag.decompose()
+            
+    return str(soup)
+
+
+def collapse_links(md: str) -> str:
+    """Collapse line-break links where text, URL or brackets are split across lines."""
+    def replace_link(match):
+        text = match.group(1)
+        url = match.group(2)
+        clean_text = re.sub(r'\s+', ' ', text).strip()
+        clean_url = re.sub(r'\s+', '', url).strip()
+        return f"[{clean_text}]({clean_url})"
+    return re.sub(r'\[([^\]]*?)\]\s*\(\s*([^\)]*?)\s*\)', replace_link, md, flags=re.DOTALL)
+
+
+def fix_lists_and_links(md: str) -> str:
+    """Convert consecutive lines of standalone links into standard bullet lists, removing empty lines between them."""
+    lines = md.split('\n')
+    
+    # Identify indices of non-empty lines
+    non_empty_indices = [i for i, line in enumerate(lines) if line.strip() != '']
+    if not non_empty_indices:
+        return md
+        
+    # Find which of those non-empty lines are link-only
+    link_only_indices = []
+    for idx in non_empty_indices:
+        stripped = lines[idx].strip()
+        if re.match(r'^\[[^\]]+?\]\([^\)]+?\)[.,!?;]*$', stripped):
+            link_only_indices.append(idx)
+            
+    # Group them if they are consecutive in the list of non-empty lines
+    consecutive_groups = []
+    if link_only_indices:
+        curr_pos = non_empty_indices.index(link_only_indices[0])
+        current_group = [link_only_indices[0]]
+        
+        for idx in link_only_indices[1:]:
+            pos = non_empty_indices.index(idx)
+            if pos == curr_pos + 1:
+                current_group.append(idx)
+            else:
+                consecutive_groups.append(current_group)
+                current_group = [idx]
+            curr_pos = pos
+        consecutive_groups.append(current_group)
+        
+    lines_to_delete = set()
+    list_line_indices = set()
+    
+    for group in consecutive_groups:
+        if len(group) >= 2:
+            for idx in group:
+                list_line_indices.add(idx)
+            # Mark empty lines between items in the group for deletion
+            for k in range(group[0], group[-1]):
+                if lines[k].strip() == '':
+                    lines_to_delete.add(k)
+                    
+    cleaned_lines = []
+    for i, line in enumerate(lines):
+        if i in lines_to_delete:
+            continue
+        if i in list_line_indices:
+            stripped = line.strip()
+            if not re.match(r'^[\*\-\+\d\.]', stripped):
+                indent = len(line) - len(line.lstrip())
+                cleaned_lines.append(' ' * indent + '* ' + line.lstrip())
+                continue
+        cleaned_lines.append(line)
+        
+    return '\n'.join(cleaned_lines)
+
+
+def fix_formatting_punctuation(md: str) -> str:
+    """Fix spaces around bold text, italics, links, and clean up punctuation placement."""
+    # 1. Move punctuation from the end of formatting to the outside
+    md = re.sub(r'(\*\*|\*|__|_)([^\*\n]+?)([.,!?;:]+)\1', r'\1\2\1\3', md)
+    md = re.sub(r'\[([^\]\n]+?)([.,!?;:])\]\(([^\)]+?)\)', r'[\1](\3)\2', md)
+    
+    # 2. Collapse duplicate punctuation but keep ellipsis
+    md = md.replace('...', '…')
+    md = re.sub(r'([.,!?;:])\1+', r'\1', md)
+    md = md.replace('…', '...')
+    
+    # 3. Fix spacing around punctuation and formatting/links
+    md = re.sub(r'(\b\w+(?:\*\*|\*|__|_)?)([.,!?;:])(\[|\*\*|\*)', r'\1\2 \3', md)
+    
+    # 4. Fix sticking bold/italic/links to adjacent words using strict boundaries
+    md = re.sub(r'([a-zA-Zа-яА-ЯёЁ0-9])(?<!\*)\*\*([^\*\n]+?)(?<!\*)\*\*(?!\*)', r'\1 **\2**', md)
+    md = re.sub(r'(?<!\*)\*\*([^\*\n]+?)(?<!\*)\*\*([a-zA-Zа-яА-ЯёЁ0-9])', r'**\1** \2', md)
+    md = re.sub(r'([a-zA-Zа-яА-ЯёЁ0-9])(?<!\*)\*([^\*\n]+?)(?<!\*)\*(?!\*)', r'\1 *\2*', md)
+    md = re.sub(r'(?<!\*)\*([^\*\n]+?)(?<!\*)\*([a-zA-Zа-яА-ЯёЁ0-9])', r'*\1* \2', md)
+    
+    # Links sticking to words
+    md = re.sub(r'(\]\]*\([^\)]+?\))([a-zA-Zа-яА-ЯёЁ0-9])', r'\1 \2', md)
+    md = re.sub(r'([a-zA-Zа-яА-ЯёЁ0-9])(\[([^\]]+?)\]\([^\)]+?\))', r'\1 \2', md)
+    
+    # 5. Fix sticking formatting/links to each other
+    md = re.sub(r'(?<!\*)\*\*([^\*\n]+?)(?<!\*)\*\*(\[)', r'**\1** \2', md)
+    md = re.sub(r'(\]\([^\)]+?\))(?<!\*)\*\*([^\*\n]+?)(?<!\*)\*\*(?!\*)', r'\1 **\2**', md)
+    md = re.sub(r'(?<!\*)\*([^\*\n]+?)(?<!\*)\*(\[)', r'*\1* \2', md)
+    md = re.sub(r'(\]\([^\)]+?\))(?<!\*)\*([^\*\n]+?)(?<!\*)\*(?!\*)', r'\1 *\2*', md)
+    md = re.sub(r'(?<!\*)\*\*([^\*\n]+?)(?<!\*)\*\*(?<!\*)\*\*([^\*\n]+?)(?<!\*)\*\*(?!\*)', r'**\1** **\2**', md)
+    md = re.sub(r'(\]\([^\)]+?\))(\[)', r'\1 \2', md)
+    
+    return md
+
+
+
+def strip_navigation_junk(md: str) -> str:
+    """Remove standalone navigation arrows, buttons, and UI controls."""
+    lines = md.split('\n')
+    cleaned_lines = []
+    
+    junk_symbol_pattern = re.compile(r'^\[?[→←▲▼⇒⇐≫≪•«»<>–—\s]+\]?$')
+    junk_text_pattern = re.compile(
+        r'^\[?(Далее|Назад|Читать далее|Дальше|Next|Prev|Previous|Back|Read more|Share|Поделиться|vk|vkontakte|twitter|facebook|telegram|instagram|linkedin|odnoklassniki)\]?$',
+        re.IGNORECASE
+    )
+    
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            cleaned_lines.append(line)
+            continue
+            
+        # Do not strip blockquote markers
+        if stripped.startswith('>'):
+            cleaned_lines.append(line)
+            continue
+            
+        if re.match(r'^(?:-{3,}|\*{3,}|_{3,})$', stripped):
+            cleaned_lines.append(line)
+            continue
+            
+        if junk_symbol_pattern.match(stripped) or junk_text_pattern.match(stripped):
+            continue
+            
+        cleaned_lines.append(line)
+        
+    return '\n'.join(cleaned_lines)
+
+
+def normalize_blockquotes(md: str) -> str:
+    """Ensure blank lines within blockquotes are formatted with '>' to keep quote continuity."""
+    lines = md.split('\n')
+    for i in range(len(lines)):
+        if lines[i].strip() == '':
+            prev_idx = i - 1
+            while prev_idx >= 0 and lines[prev_idx].strip() == '':
+                prev_idx -= 1
+            next_idx = i + 1
+            while next_idx < len(lines) and lines[next_idx].strip() == '':
+                next_idx += 1
+                
+            if (prev_idx >= 0 and lines[prev_idx].strip().startswith('>')) and \
+               (next_idx < len(lines) and lines[next_idx].strip().startswith('>')):
+                lines[i] = '>'
+    return '\n'.join(lines)
+
+
+def fix_header_spacing(md: str) -> str:
+    """Ensure there is a single blank line before and after headers."""
+    lines = md.split('\n')
+    cleaned = []
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped.startswith('#') and re.match(r'^#+\s+', stripped):
+            if cleaned and cleaned[-1].strip() != '' and not cleaned[-1].strip().startswith('#'):
+                cleaned.append('')
+            cleaned.append(line)
+        else:
+            if cleaned and cleaned[-1].strip().startswith('#') and stripped != '' and not stripped.startswith('#'):
+                cleaned.append('')
+            cleaned.append(line)
+    return '\n'.join(cleaned)
+
+
+def custom_rstrip(line: str) -> str:
+    """Strip trailing whitespace but preserve standard markdown breaks (exactly two spaces)."""
+    if line.endswith('  '):
+        return line[:-2].rstrip() + '  '
+    return line.rstrip()
+
+
+def clean_markdown(markdown_content: str) -> str:
+    """
+    Post-process the generated Markdown content to strip trailing whitespaces,
+    clean punctuation spacing, normalize parentheses/brackets/em-dashes,
+    remove excessive newlines, and ensure a single trailing newline.
+    Also fixes split links, decodes URLs, fixes lists and headers.
+    """
+    content = markdown_content.replace('\xa0', ' ').replace('\u200b', '')
+    
+    parts = re.split(r'(```[\s\S]*?```)', content)
+    processed_parts = []
+    
+    for part in parts:
+        if part.startswith('```'):
+            processed_parts.append(part)
+        else:
+            lines = [custom_rstrip(line) for line in part.split('\n')]
+            cleaned_lines = []
+            for line in lines:
+                indent = len(line) - len(line.lstrip())
+                text_part = line.lstrip()
+                
+                text_part = re.sub(r'[ \t]+', ' ', text_part)
+                text_part = re.sub(r'\s+([.,!?;])', r'\1', text_part)
+                text_part = re.sub(r'\(\s+(.*?)\s+\)', r'(\1)', text_part)
+                text_part = re.sub(r'\[\s+(.*?)\s+\]', r'[\1]', text_part)
+                text_part = re.sub(r'\s+(--?)\s+', ' — ', text_part)
+                text_part = re.sub(r'\s+—\s+', ' — ', text_part)
+                
+                cleaned_lines.append(' ' * indent + text_part)
+                
+            text = '\n'.join(cleaned_lines)
+            
+            text = re.sub(r'~~(.*?)~~', r'\1', text)
+            text = collapse_links(text)
+            text = fix_lists_and_links(text)
+            text = fix_formatting_punctuation(text)
+            text = strip_navigation_junk(text)
+            text = normalize_blockquotes(text)
+            text = fix_header_spacing(text)
+            
+            processed_parts.append(text)
+            
+    content = ''.join(processed_parts)
+    content = re.sub(r'\n{3,}', '\n\n', content)
+    content = content.strip('\n')
+    
+    return content + '\n'
+
+
+
 class MarkdownConverter(BaseConverter):
     """
     Converts HTML content to Markdown and downloads images locally.
@@ -46,21 +467,23 @@ class MarkdownConverter(BaseConverter):
         return ".md"
 
     async def convert(self, html_content: str, base_url: str, article_slug: str) -> str:
+        # 0. Preprocess HTML
+        html_content = preprocess_html(html_content)
+        
         # 1. Download images and rewrite URLs in HTML
         logger.info(f"Downloading images for article: {article_slug}")
         html_with_local_images = await self._download_images(html_content, base_url, article_slug)
         
-        # 2. Convert HTML to Markdown
-        # heading_style="ATX" generates "# Header" instead of Setext style "Header\n===="
+        # 2. Convert HTML to Markdown using custom converter
         logger.info("Converting HTML to Markdown")
-        markdown_content = markdownify.markdownify(
-            html_with_local_images,
+        converter = CustomMarkdownConverter(
             heading_style="ATX",
             code_language_callback=lambda el: el.get("class", [""])[0].replace("language-", "") if el.get("class") else ""
         )
+        markdown_content = converter.convert(html_with_local_images)
         
-        # 3. Clean up extra newlines
-        markdown_content = re.sub(r'\n{3,}', '\n\n', markdown_content)
+        # 3. Clean up formatting and extra newlines
+        markdown_content = clean_markdown(markdown_content)
         
         return markdown_content
 

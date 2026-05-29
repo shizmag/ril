@@ -9,8 +9,12 @@ from ril.mcp_server import (
     mark_article_read,
     mark_article_unread,
     get_reading_stats,
-    get_article_content
+    get_article_content,
+    delete_article,
+    reset_library
 )
+
+# ... [unchanged code in between] ...
 
 @pytest.mark.asyncio
 async def test_mcp_process_url(mocker, setup_test_environment):
@@ -162,3 +166,15 @@ def test_mcp_get_article_content(setup_test_environment):
     
     # Non-existent article ID check
     assert "not found" in get_article_content(99999)
+
+def test_mcp_delete_article(mocker, setup_test_environment):
+    mock_delete = mocker.patch("ril.core.delete_article", return_value=True)
+    resp = delete_article(42)
+    mock_delete.assert_called_once_with(42)
+    assert "Successfully deleted" in resp
+
+def test_mcp_reset_library(mocker, setup_test_environment):
+    mock_reset = mocker.patch("ril.core.reset_library")
+    resp = reset_library()
+    mock_reset.assert_called_once()
+    assert "Library reset successfully" in resp

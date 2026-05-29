@@ -120,3 +120,28 @@ def test_cli_run_mcp(mocker):
     with patch("sys.argv", ["main.py", "mcp"]):
         main()
         mock_mcp_run.assert_called_once_with(transport="stdio")
+
+def test_cli_delete(mocker, setup_test_environment, capsys):
+    mock_delete = mocker.patch("ril.core.delete_article", return_value=True)
+    with patch("sys.argv", ["main.py", "delete", "42"]):
+        main()
+        captured = capsys.readouterr()
+        assert "Article 42 successfully deleted." in captured.out
+        mock_delete.assert_called_once_with(42)
+
+def test_cli_reset_confirmed(mocker, setup_test_environment, capsys):
+    mock_reset = mocker.patch("ril.core.reset_library")
+    with patch("sys.argv", ["main.py", "reset", "--yes"]):
+        main()
+        captured = capsys.readouterr()
+        assert "Library and database successfully cleared." in captured.out
+        mock_reset.assert_called_once()
+
+def test_cli_reset_aborted(mocker, setup_test_environment, capsys):
+    mock_reset = mocker.patch("ril.core.reset_library")
+    with patch("builtins.input", return_value="no"):
+        with patch("sys.argv", ["main.py", "reset"]):
+            main()
+            captured = capsys.readouterr()
+            assert "Aborted." in captured.out
+            mock_reset.assert_not_called()

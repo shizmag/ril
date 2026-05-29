@@ -1,6 +1,7 @@
 import re
 import datetime
 import logging
+import shutil
 from pathlib import Path
 from typing import Dict, Any, Optional
 
@@ -95,3 +96,84 @@ async def process_url(
         "char_count": char_count,
         "status": "unread"
     }
+
+def delete_article(article_id: int) -> bool:
+    """Delete an article from database and clean up its files (markdown and images)."""
+    # 1. Get article metadata to find file paths
+    article = db.get_article(article_id)
+    if not article:
+        logger.warning(f"Article with ID {article_id} not found in DB.")
+        return False
+        
+    file_path = Path(article['file_path'])
+    
+    # 2. Delete from DB
+    deleted = db.delete_article(article_id)
+    if not deleted:
+        return False
+        
+    # 3. Delete markdown file
+    try:
+        if file_path.exists():
+            file_path.unlink()
+            logger.info(f"Deleted file: {file_path}")
+    except Exception as e:
+        logger.error(f"Error deleting markdown file {file_path}: {e}")
+        
+    # 4. Delete images folder
+    # The image directory name is the slug of the file, which is file_path.stem
+    slug = file_path.stem
+    img_dir = config.LIBRARY_DIR / "images" / slug
+    try:
+        if img_dir.exists() and img_dir.is_dir():
+            shutil.rmtree(img_dir)
+            logger.info(f"Deleted image folder: {img_dir}")
+    except Exception as e:
+        logger.error(f"Error deleting image folder {img_dir}: {e}")
+        
+    return True
+
+def reset_library() -> None:
+    """Clear all database tables and remove all markdown files/images in the library."""
+    # 1. Clear database tables
+    with db.get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM articles")
+        try:
+            cursor.execute("DELETE FROM articles_fts")
+        except Exception as e:
+            logger.warning(f"Error clearing articles_fts: {e}")
+        conn.commit()
+    
+    # 2. Clean up files in library directory
+    try:
+        db_path_resolved = config.DB_PATH.resolve()
+        for item in config.LIBRARY_DIR.iterdir():
+            # Skip database file itself
+            if item.resolve() == db_path_resolved:
+                continue
+            
+            if item.is_file():
+                try:
+                    item.unlink()
+                    logger.info(f"Deleted file during reset: {item}")
+                except Exception as e:
+                    logger.error(f"Error deleting file {item}: {e}")
+            elif item.is_dir() and item.name == "images":
+                # Clean all subfolders in images/
+                for img_sub in item.iterdir():
+                    try:
+                        if img_sub.is_dir():
+                            shutil.rmtree(img_sub)
+                        else:
+                            img_sub.unlink()
+                    except Exception as e:
+                        logger.error(f"Error cleaning image subdir {img_sub}: {e}")
+            elif item.is_dir():
+                try:
+                    shutil.rmtree(item)
+                    logger.info(f"Deleted directory during reset: {item}")
+                except Exception as e:
+                    logger.error(f"Error deleting directory {item}: {e}")
+    except Exception as e:
+        logger.error(f"Error resetting files: {e}")
