@@ -137,14 +137,22 @@ def handle_config(args):
         print("Error: You must specify either --api-key, --users, or both.", file=sys.stderr)
         sys.exit(1)
         
-    from dotenv import set_key, find_dotenv
-    dotenv_path = find_dotenv()
+    from dotenv import set_key
+    
+    # Find .env starting from CWD
+    dotenv_path = None
+    current = Path.cwd()
+    for parent in [current] + list(current.parents):
+        env_file = parent / ".env"
+        if env_file.is_file():
+            dotenv_path = env_file
+            break
+            
     if not dotenv_path:
         dotenv_path = Path.cwd() / ".env"
         dotenv_path.touch()
         print(f"Created new .env file at: {dotenv_path}")
     else:
-        dotenv_path = Path(dotenv_path)
         print(f"Updating existing .env file at: {dotenv_path}")
         
     try:

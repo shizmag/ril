@@ -2,8 +2,18 @@ import os
 from pathlib import Path
 from dotenv import load_dotenv
 
-# Load environment variables from .env
-load_dotenv()
+# Load environment variables from .env (search up from CWD first)
+def _load_env_from_cwd():
+    current = Path.cwd()
+    for parent in [current] + list(current.parents):
+        env_path = parent / ".env"
+        if env_path.is_file():
+            load_dotenv(dotenv_path=env_path)
+            return True
+    return False
+
+if not _load_env_from_cwd():
+    load_dotenv()
 
 # Base directories
 BASE_DIR = Path(__file__).resolve().parent.parent
