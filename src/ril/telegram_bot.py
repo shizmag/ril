@@ -532,53 +532,16 @@ async def reset_confirm_command(update: Update, context: ContextTypes.DEFAULT_TY
         logger.error(f"Error resetting library: {e}")
         await update.message.reply_text("❌ Ошибка при очистке библиотеки.")
 
-@check_user
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle normal messages and extract links."""
-    text = update.message.text
-    if not text:
-        return
-        
-    # Simple regex to extract URL(s)
-    urls = re.findall(r'(https?://\S+)', text)
-    if not urls:
-        try:
-            await update.message.delete()
-        except Exception:
-            pass
-        warning_msg = await update.message.reply_text(
-            "ℹ️ Пришлите мне ссылку, чтобы сохранить статью в архив.",
-            reply_markup=InlineKeyboardMarkup([[
-                InlineKeyboardButton("🗑️ Закрыть", callback_data="delete_this_msg")
-            ]])
-        )
-        asyncio.create_task(delayed_delete(context, update.effective_chat.id, warning_msg.message_id, 10))
-        return
-        
-    text_lower = text.lower()
-    if "html" in text_lower:
-        fmt = "html"
-    elif "epub" in text_lower:
-        fmt = "epub"
-    elif "markdown" in text_lower or "md" in text_lower:
-        fmt = "markdown"
-    else:
-        fmt = context.user_data.get("format", "markdown")
-        
-    from ril.converters import MarkdownConverter, HTMLConverter, EPUBConverter
-    if fmt == "html":
-        converter = HTMLConverter()
-    elif fmt == "epub":
-        converter = EPUBConverter()
-    else:
-        converter = MarkdownConverter()
-        
-    try:
-        await update.message.delete()
-    except Exception:
-        pass
-
-    for url in urls:
+async def _import_single_url(
+    url: str,
+    fmt: str,
+    converter,
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    semaphore: asyncio.Semaphore
+):
+    """Worker to import a single URL with concurrency control."""
+    async with semaphore:
         status_msg = await update.message.reply_text(f"⏳ Начинаю импорт ({fmt.upper()}): {url}...")
         try:
             # Process URL through core pipeline
@@ -638,6 +601,60 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 parse_mode="Markdown"
             )
             asyncio.create_task(delayed_delete(context, update.effective_chat.id, error_msg.message_id, 30))
+
+@check_user
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle normal messages and extract links."""
+    text = update.message.text
+    if not text:
+        return
+        
+    # Simple regex to extract URL(s)
+    urls = re.findall(r'(https?://\S+)', text)
+    if not urls:
+        try:
+            await update.message.delete()
+        except Exception:
+            pass
+        warning_msg = await update.message.reply_text(
+            "ℹ️ Пришлите мне ссылку, чтобы сохранить статью в архив.",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("🗑️ Закрыть", callback_data="delete_this_msg")
+            ]])
+        )
+        asyncio.create_task(delayed_delete(context, update.effective_chat.id, warning_msg.message_id, 10))
+        return
+        
+    text_lower = text.lower()
+    if "html" in text_lower:
+        fmt = "html"
+    elif "epub" in text_lower:
+        fmt = "epub"
+    elif "markdown" in text_lower or "md" in text_lower:
+        fmt = "markdown"
+    else:
+        fmt = context.user_data.get("format", "markdown")
+        
+    from ril.converters import MarkdownConverter, HTMLConverter, EPUBConverter
+    if fmt == "html":
+        converter = HTMLConverter()
+    elif fmt == "epub":
+        converter = EPUBConverter()
+    else:
+        converter = MarkdownConverter()
+        
+    try:
+        await update.message.delete()
+    except Exception:
+        pass
+
+    # Process links concurrently with a limit of 3 concurrent chromium/download instances
+    semaphore = asyncio.Semaphore(3)
+    tasks = [
+        _import_single_url(url, fmt, converter, update, context, semaphore)
+        for url in urls
+    ]
+    await asyncio.gather(*tasks)
 
 async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle callback queries from inline buttons."""

@@ -16,6 +16,45 @@ def test_sanitize_filename():
     long_title = "a" * 100
     assert len(core.sanitize_filename(long_title)) == 60
 
+    # Title that would end with underscore/hyphen after slicing to 60 chars
+    title_ending_in_underscore = "Zero Trust для AI-агентов: как безопасно давать LLM доступ к инструментам"
+    assert core.sanitize_filename(title_ending_in_underscore) == "zero_trust_для_ai-агентов_как_безопасно_давать_llm_доступ_к"
+    
+    title_ending_in_hyphen = "a" * 59 + "-" + "b"
+    assert core.sanitize_filename(title_ending_in_hyphen) == "a" * 59
+
+@pytest.mark.asyncio
+async def test_process_url_creates_directory_if_missing(mocker, setup_test_environment, monkeypatch):
+    library_dir = setup_test_environment["library_dir"]
+    temp_dir = setup_test_environment["temp_dir"]
+    import shutil
+    
+    # Move the DB path outside of library_dir for this test so we can delete library_dir
+    # without deleting the database
+    new_db_path = temp_dir / "metadata.db"
+    monkeypatch.setattr("ril.config.DB_PATH", new_db_path)
+    db.init_db()
+    
+    # Delete the library directory to simulate it being missing
+    if library_dir.exists():
+        shutil.rmtree(library_dir)
+    assert not library_dir.exists()
+    
+    # Mock crawler HTML fetching
+    mocker.patch("ril.core.fetch_html", new_callable=AsyncMock, return_value="<html>Raw HTML</html>")
+    # Mock readability cleaning
+    mocker.patch("ril.core.extract_article", return_value=("Test Missing Dir", "<div>Test content</div>"))
+    # Mock converter
+    mock_convert = AsyncMock(return_value="# Test Missing Dir\n\nContent.")
+    mocker.patch("ril.converters.MarkdownConverter.convert", mock_convert)
+    
+    # Process url should recreate the directory and succeed
+    result = await core.process_url("https://example.com/test-missing-dir")
+    
+    assert library_dir.exists()
+    assert (library_dir / "images").exists()
+    assert os.path.exists(result["file_path"])
+
 @pytest.mark.asyncio
 async def test_process_url_pipeline(mocker, setup_test_environment):
     library_dir = setup_test_environment["library_dir"]

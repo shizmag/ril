@@ -434,6 +434,46 @@ async def test_epub_converter_basic(mocker, setup_test_environment):
         assert 'src="images/img_0.png"' in article_xhtml
 
 
+def test_image_optimization_transparency():
+    from PIL import Image
+    import io
+    import random
+    from ril.converters import MarkdownConverter
+    
+    converter = MarkdownConverter()
+    
+    # 1. Create fully opaque RGBA image with noise (200x200 pixels, alpha=255)
+    opaque_img = Image.new("RGBA", (200, 200))
+    pixels = opaque_img.load()
+    for x in range(200):
+        for y in range(200):
+            pixels[x, y] = (random.randint(0, 255), random.randint(0, 255), random.randint(0, 255), 255)
+            
+    opaque_io = io.BytesIO()
+    opaque_img.save(opaque_io, format="PNG")
+    opaque_bytes = opaque_io.getvalue()
+    
+    res_opaque = converter._optimize_image(opaque_bytes, "image/png")
+    assert res_opaque is not None
+    optimized_opaque_bytes, mime_opaque = res_opaque
+    assert mime_opaque == "image/jpeg"  # Converted to JPEG because it is fully opaque!
+    
+    # 2. Create RGBA image with transparency and noise (200x200 pixels, alpha=128)
+    transparent_img = Image.new("RGBA", (200, 200))
+    pixels_trans = transparent_img.load()
+    for x in range(200):
+        for y in range(200):
+            pixels_trans[x, y] = (random.randint(0, 255), random.randint(0, 255), random.randint(0, 255), 128)
+            
+    transparent_io = io.BytesIO()
+    transparent_img.save(transparent_io, format="PNG")
+    transparent_bytes = transparent_io.getvalue()
+    
+    res_transparent = converter._optimize_image(transparent_bytes, "image/png")
+    assert res_transparent is not None
+    optimized_transparent_bytes, mime_transparent = res_transparent
+    assert mime_transparent == "image/png"  # Kept as PNG because of transparency!
+
 
 
 

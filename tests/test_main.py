@@ -145,3 +145,50 @@ def test_cli_reset_aborted(mocker, setup_test_environment, capsys):
             captured = capsys.readouterr()
             assert "Aborted." in captured.out
             mock_reset.assert_not_called()
+
+def test_cli_config_no_args(capsys):
+    with pytest.raises(SystemExit) as exc_info:
+        with patch("sys.argv", ["main.py", "config"]):
+            main()
+    assert exc_info.value.code == 1
+    captured = capsys.readouterr()
+    assert "Error: You must specify either --api-key, --users, or both." in captured.err
+
+def test_cli_config_success(mocker, capsys):
+    mock_find_dotenv = mocker.patch("dotenv.find_dotenv", return_value="/mocked/.env")
+    mock_set_key = mocker.patch("dotenv.set_key")
+    
+    with patch("sys.argv", ["main.py", "config", "--api-key", "my-token", "--users", "123,456"]):
+        main()
+        
+    captured = capsys.readouterr()
+    assert "Updating existing .env file at: /mocked/.env" in captured.out
+    assert "Successfully set TELEGRAM_TOKEN" in captured.out
+    assert "Successfully set ALLOWED_TELEGRAM_USERS to: 123,456" in captured.out
+    
+    mock_set_key.assert_any_call("/mocked/.env", "TELEGRAM_TOKEN", "my-token")
+    mock_set_key.assert_any_call("/mocked/.env", "ALLOWED_TELEGRAM_USERS", "123,456")
+
+def test_cli_config_invalid_user(mocker, capsys):
+    mocker.patch("dotenv.find_dotenv", return_value="/mocked/.env")
+    mocker.patch("dotenv.set_key")
+    
+    with pytest.raises(SystemExit) as exc_info:
+        with patch("sys.argv", ["main.py", "config", "--users", "123,not-an-int,456"]):
+            main()
+            
+    assert exc_info.value.code == 1
+    captured = capsys.readouterr()
+    assert "Error: User ID 'not-an-int' is not a valid integer." in captured.err
+
+def test_cli_config_clear_users(mocker, capsys):
+    mocker.patch("dotenv.find_dotenv", return_value="/mocked/.env")
+    mock_set_key = mocker.patch("dotenv.set_key")
+    
+    with patch("sys.argv", ["main.py", "config", "--users", ""]):
+        main()
+        
+    captured = capsys.readouterr()
+    assert "Successfully cleared ALLOWED_TELEGRAM_USERS" in captured.out
+    mock_set_key.assert_called_once_with("/mocked/.env", "ALLOWED_TELEGRAM_USERS", "")
+

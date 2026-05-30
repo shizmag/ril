@@ -350,6 +350,37 @@ async def test_telegram_handle_message_with_format(mocker, setup_test_environmen
     from ril.converters import HTMLConverter
     assert isinstance(mock_process.call_args[1]["converter"], HTMLConverter)
 
+@pytest.mark.asyncio
+async def test_telegram_handle_message_multiple_urls(mocker, setup_test_environment):
+    mocker.patch("ril.telegram_bot.ALLOWED_TELEGRAM_USERS", [12345])
+    
+    mock_process = mocker.patch(
+        "ril.core.process_url",
+        new_callable=AsyncMock,
+        return_value={
+            "id": 9,
+            "title": "Agent 1",
+            "file_path": "/vault/agent1.md",
+            "word_count": 100
+        }
+    )
+    
+    status_msg = MagicMock()
+    status_msg.message_id = 999
+    update, context = create_mock_update(
+        user_id=12345,
+        text="Check these links: https://link1.com/art1 and https://link2.com/art2"
+    )
+    update.message.reply_text = AsyncMock(return_value=status_msg)
+    mocker.patch("os.path.exists", return_value=False)
+    
+    await telegram_bot.handle_message(update, context)
+    
+    assert mock_process.call_count == 2
+    mock_process.assert_any_call("https://link1.com/art1", converter=mocker.ANY)
+    mock_process.assert_any_call("https://link2.com/art2", converter=mocker.ANY)
+    assert context.bot.delete_message.call_count == 2
+
 def test_telegram_run_bot(mocker):
     mock_app = MagicMock()
     mock_builder = MagicMock()

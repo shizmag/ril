@@ -28,8 +28,8 @@ def sanitize_filename(title: str) -> str:
     name = re.sub(r'[^\w\s-]', '', name)
     # Replace spaces and consecutive underscores with a single underscore
     name = re.sub(r'[\s_]+', '_', name)
-    # Limit length to avoid path errors
-    return name.strip('_')[:60]
+    # Limit length to avoid path errors, then strip leading/trailing underscores and hyphens
+    return name[:60].strip('_-')
 
 async def process_url(
     url: str,
@@ -67,6 +67,10 @@ async def process_url(
     # 4. Save file
     file_name = f"{slug}{converter.file_extension}"
     file_path = config.LIBRARY_DIR / file_name
+    
+    # Ensure library directory exists before writing to it
+    config.LIBRARY_DIR.mkdir(parents=True, exist_ok=True)
+    (config.LIBRARY_DIR / "images").mkdir(parents=True, exist_ok=True)
     
     if isinstance(content, bytes):
         with open(file_path, "wb") as f:
@@ -156,6 +160,8 @@ def reset_library() -> None:
     
     # 2. Clean up files in library directory
     try:
+        if not config.LIBRARY_DIR.exists():
+            return
         db_path_resolved = config.DB_PATH.resolve()
         for item in config.LIBRARY_DIR.iterdir():
             # Skip database file itself

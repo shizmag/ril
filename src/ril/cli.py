@@ -131,6 +131,51 @@ def handle_mcp(args):
     # Expose FastMCP server over standard input/output (stdio)
     mcp.run(transport="stdio")
 
+def handle_config(args):
+    """Save configuration settings (Telegram token/API Key and allowed users) to the .env file."""
+    if args.api_key is None and args.users is None:
+        print("Error: You must specify either --api-key, --users, or both.", file=sys.stderr)
+        sys.exit(1)
+        
+    from dotenv import set_key, find_dotenv
+    dotenv_path = find_dotenv()
+    if not dotenv_path:
+        dotenv_path = Path.cwd() / ".env"
+        dotenv_path.touch()
+        print(f"Created new .env file at: {dotenv_path}")
+    else:
+        dotenv_path = Path(dotenv_path)
+        print(f"Updating existing .env file at: {dotenv_path}")
+        
+    try:
+        if args.api_key is not None:
+            api_key = args.api_key.strip()
+            set_key(str(dotenv_path), "TELEGRAM_TOKEN", api_key)
+            print("Successfully set TELEGRAM_TOKEN")
+            
+        if args.users is not None:
+            if args.users.strip() == "":
+                set_key(str(dotenv_path), "ALLOWED_TELEGRAM_USERS", "")
+                print("Successfully cleared ALLOWED_TELEGRAM_USERS")
+            else:
+                user_list = []
+                for u in args.users.split(","):
+                    u_cleaned = u.strip()
+                    if u_cleaned:
+                        try:
+                            int(u_cleaned)
+                            user_list.append(u_cleaned)
+                        except ValueError:
+                            print(f"Error: User ID '{u_cleaned}' is not a valid integer.", file=sys.stderr)
+                            sys.exit(1)
+                users_str = ",".join(user_list)
+                set_key(str(dotenv_path), "ALLOWED_TELEGRAM_USERS", users_str)
+                print(f"Successfully set ALLOWED_TELEGRAM_USERS to: {users_str}")
+                
+    except Exception as e:
+        print(f"Error saving config: {e}", file=sys.stderr)
+        sys.exit(1)
+
 def main():
     parser = argparse.ArgumentParser(description="Read It Later (RIL) Command Line Tool")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -175,6 +220,11 @@ def main():
     parser_reset = subparsers.add_parser("reset", help="Reset library and database (deletes all articles)")
     parser_reset.add_argument("--yes", action="store_true", help="Skip confirmation prompt")
     
+    # config command
+    parser_config = subparsers.add_parser("config", help="Set configuration settings (Telegram Token and Allowed Users)")
+    parser_config.add_argument("--api-key", help="Telegram Token / API Key")
+    parser_config.add_argument("--users", help="Allowed Telegram User IDs (comma-separated, empty string to clear)")
+    
     args = parser.parse_args()
     
     # Ensure database is initialized before any operation
@@ -191,7 +241,8 @@ def main():
         "read": handle_read,
         "unread": handle_unread,
         "delete": handle_delete,
-        "reset": handle_reset
+        "reset": handle_reset,
+        "config": handle_config
     }
     
     commands[args.command](args)

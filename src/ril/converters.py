@@ -142,8 +142,15 @@ class BaseConverter(ABC):
                 
             # 2. Determine format and save
             out_io = io.BytesIO()
-            has_transparency = img.mode in ("RGBA", "LA") or (img.mode == "P" and "transparency" in img.info)
             
+            has_transparency = False
+            if img.mode in ("RGBA", "LA"):
+                alpha = img.split()[-1]
+                # If minimum alpha is 255, the image is fully opaque
+                has_transparency = alpha.getextrema()[0] < 255
+            elif img.mode == "P" and "transparency" in img.info:
+                has_transparency = True
+                
             if has_transparency:
                 # Save as PNG with optimization to keep transparency
                 img.save(out_io, format="PNG", optimize=True)
