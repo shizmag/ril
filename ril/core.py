@@ -68,12 +68,21 @@ async def process_url(
     file_name = f"{slug}{converter.file_extension}"
     file_path = config.LIBRARY_DIR / file_name
     
-    with open(file_path, "w", encoding="utf-8") as f:
-        f.write(content)
+    if isinstance(content, bytes):
+        with open(file_path, "wb") as f:
+            f.write(content)
+    else:
+        with open(file_path, "w", encoding="utf-8") as f:
+            f.write(content)
         
-    # Calculate word and char count
-    word_count = len(re.findall(r'\w+', content))
-    char_count = len(content)
+    # Extract plain text for word counting and search indexing
+    from bs4 import BeautifulSoup
+    search_soup = BeautifulSoup(clean_html, "lxml")
+    search_text = search_soup.get_text(separator=" ")
+    
+    # Calculate word and char count based on plain text
+    word_count = len(re.findall(r'\w+', search_text))
+    char_count = len(search_text)
     
     # 5. Save to database & FTS
     article_id = db.add_article(
@@ -82,7 +91,7 @@ async def process_url(
         file_path=str(file_path),
         word_count=word_count,
         char_count=char_count,
-        content=content
+        content=search_text
     )
     
     logger.info(f"Successfully saved article: {title} (ID: {article_id})")

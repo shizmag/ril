@@ -383,6 +383,58 @@ async def test_html_converter_mobile_responsive(mocker, setup_test_environment):
     assert 'box-sizing: border-box' in result
 
 
+@pytest.mark.asyncio
+async def test_epub_converter_basic(mocker, setup_test_environment):
+    from ril.converters import EPUBConverter
+    import zipfile
+    import io
+    
+    converter = EPUBConverter()
+    assert converter.file_extension == ".epub"
+    
+    # Mock httpx image download
+    mock_response = MagicMock()
+    mock_response.content = b"fake-epub-bytes"
+    mock_response.headers = {"content-type": "image/png"}
+    mock_response.raise_for_status = MagicMock()
+    mocker.patch("httpx.AsyncClient.get", return_value=mock_response)
+    
+    html = (
+        "<h1>EPUB Title</h1>"
+        "<p>This is a paragraph with <img src=\"https://example.com/logo.png\" alt=\"Logo\" />.</p>"
+    )
+    
+    epub_bytes = await converter.convert(html, "https://example.com", "test-epub")
+    assert isinstance(epub_bytes, bytes)
+    
+    # Read the zip structure from epub bytes
+    with zipfile.ZipFile(io.BytesIO(epub_bytes)) as z:
+        # Check files inside EPUB
+        namelist = z.namelist()
+        assert "mimetype" in namelist
+        assert "META-INF/container.xml" in namelist
+        assert "OEBPS/content.opf" in namelist
+        assert "OEBPS/toc.ncx" in namelist
+        assert "OEBPS/style.css" in namelist
+        assert "OEBPS/article.xhtml" in namelist
+        assert "OEBPS/images/img_0.png" in namelist
+        
+        # Check mimetype is correct and stored uncompressed
+        info = z.getinfo("mimetype")
+        assert info.compress_type == zipfile.ZIP_STORED
+        assert z.read("mimetype") == b"application/epub+zip"
+        
+        # Verify content.opf and article.xhtml have correct data
+        content_opf = z.read("OEBPS/content.opf").decode("utf-8")
+        assert "EPUB Title" in content_opf
+        assert "images/img_0.png" in content_opf
+        
+        article_xhtml = z.read("OEBPS/article.xhtml").decode("utf-8")
+        assert "EPUB Title" in article_xhtml
+        assert 'src="images/img_0.png"' in article_xhtml
+
+
+
 
 
 

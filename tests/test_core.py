@@ -24,7 +24,7 @@ async def test_process_url_pipeline(mocker, setup_test_environment):
     mocker.patch("ril.core.fetch_html", new_callable=AsyncMock, return_value="<html>Raw HTML</html>")
     
     # Mock readability cleaning
-    mocker.patch("ril.core.extract_article", return_value=("Квантовые процессоры", "<div>Clean article</div>"))
+    mocker.patch("ril.core.extract_article", return_value=("Квантовые процессоры", "<div>Квантовые процессоры Текст статьи</div>"))
     
     # Mock converter (so we don't try to download mocked images)
     mock_convert = AsyncMock(return_value="# Квантовые процессоры\n\nТекст статьи.")

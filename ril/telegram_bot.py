@@ -94,6 +94,7 @@ async def format_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = InlineKeyboardMarkup([
         [
             InlineKeyboardButton("📄 Markdown", callback_data="set_format:markdown"),
+            InlineKeyboardButton("📚 EPUB", callback_data="set_format:epub"),
             InlineKeyboardButton("🌐 HTML", callback_data="set_format:html")
         ],
         [
@@ -557,13 +558,20 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text_lower = text.lower()
     if "html" in text_lower:
         fmt = "html"
+    elif "epub" in text_lower:
+        fmt = "epub"
     elif "markdown" in text_lower or "md" in text_lower:
         fmt = "markdown"
     else:
         fmt = context.user_data.get("format", "markdown")
         
-    from ril.converters import MarkdownConverter, HTMLConverter
-    converter = HTMLConverter() if fmt == "html" else MarkdownConverter()
+    from ril.converters import MarkdownConverter, HTMLConverter, EPUBConverter
+    if fmt == "html":
+        converter = HTMLConverter()
+    elif fmt == "epub":
+        converter = EPUBConverter()
+    else:
+        converter = MarkdownConverter()
         
     try:
         await update.message.delete()
@@ -777,6 +785,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         keyboard = InlineKeyboardMarkup([
             [
                 InlineKeyboardButton("📄 Markdown", callback_data="set_format:markdown"),
+                InlineKeyboardButton("📚 EPUB", callback_data="set_format:epub"),
                 InlineKeyboardButton("🌐 HTML", callback_data="set_format:html")
             ],
             [

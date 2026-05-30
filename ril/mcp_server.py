@@ -20,14 +20,19 @@ async def process_url(url: str, format: str = "markdown") -> str:
     
     Args:
         url: The web link/URL of the article to capture.
-        format: The format to save the article, either 'markdown' (default) or 'html'.
+        format: The format to save the article, either 'markdown' (default), 'html', or 'epub'.
     """
     try:
-        if format not in ("markdown", "html"):
-            return "Error: format must be either 'markdown' or 'html'"
+        if format not in ("markdown", "html", "epub"):
+            return "Error: format must be either 'markdown', 'html', or 'epub'"
             
-        from ril.converters import MarkdownConverter, HTMLConverter
-        converter = HTMLConverter() if format == "html" else MarkdownConverter()
+        from ril.converters import MarkdownConverter, HTMLConverter, EPUBConverter
+        if format == "html":
+            converter = HTMLConverter()
+        elif format == "epub":
+            converter = EPUBConverter()
+        else:
+            converter = MarkdownConverter()
         result = await core.process_url(url, converter=converter)
         return (
             f"Saved successfully!\n"

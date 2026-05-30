@@ -1,12 +1,15 @@
 import os
 import re
+import io
 import base64
 import hashlib
 import logging
 import asyncio
+import zipfile
+import uuid
 from abc import ABC, abstractmethod
 from typing import Optional, Tuple, Dict, Any
-from urllib.parse import urljoin, urlparse, parse_qs, urlunparse, urlencode, unquote
+from urllib.parse import urljoin, urlparse, parse_qs, urlunparse, urlencode, unquote, quote
 from pathlib import Path
 import httpx
 from bs4 import BeautifulSoup
@@ -47,6 +50,12 @@ class BaseConverter(ABC):
         """
         async with semaphore:
             try:
+                # Unquote first to handle already percent-encoded or double-encoded URLs, then encode safely
+                url = unquote(url)
+                if '%' in url:
+                    url = unquote(url)
+                url = quote(url, safe=':/?#[]@!$&\'()*+,;=')
+                
                 headers = {
                     "User-Agent": (
                         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
@@ -57,7 +66,11 @@ class BaseConverter(ABC):
                     "Accept-Language": "en-US,en;q=0.9,ru;q=0.8",
                 }
                 if referer:
-                    headers["Referer"] = referer
+                    # Unquote first to prevent double encoding
+                    referer = unquote(referer)
+                    if '%' in referer:
+                        referer = unquote(referer)
+                    headers["Referer"] = quote(referer, safe=':/?#[]@!$&\'()*+,;=')
 
                 await asyncio.sleep(0.15)
                 retries = 3
@@ -83,10 +96,80 @@ class BaseConverter(ABC):
 
                 response.raise_for_status()
                 content_type = response.headers.get("content-type", "image/jpeg")
-                return response.content, content_type
+                
+                # Check if it is SVG
+                if "svg" in content_type.lower():
+                    return response.content, content_type
+                
+                # Optimize image bytes using Pillow
+                res = self._optimize_image(response.content, content_type)
+                if not res:
+                    return None
+                return res
             except Exception as e:
                 logger.error(f"Error downloading image bytes {url}: {e}")
                 return None
+
+    def _optimize_image(self, img_bytes: bytes, content_type: str, max_dim: int = 1000, quality: int = 75) -> Optional[Tuple[bytes, str]]:
+        """
+        Optimize downloaded image bytes using Pillow:
+        1. Resizes to max_dim (1000px) keeping aspect ratio.
+        2. Compresses JPEGs and other formats with quality=75.
+        3. Keeps PNG alpha transparency channel if present, otherwise converts to JPEG.
+        4. Filters out tiny spacer/tracker images (size <= 16x16).
+        """
+        try:
+            from PIL import Image
+            
+            img = Image.open(io.BytesIO(img_bytes))
+            orig_format = img.format
+            
+            # Filter out tiny spacer/tracker images (e.g. 16x16 or smaller)
+            w, h = img.size
+            if w <= 16 and h <= 16:
+                logger.info(f"Skipping tiny/tracker image with dimensions {w}x{h}")
+                return None
+                
+            # 1. Resize if needed
+            if w > max_dim or h > max_dim:
+                if w > h:
+                    new_w = max_dim
+                    new_h = int(h * (max_dim / w))
+                else:
+                    new_h = max_dim
+                    new_w = int(w * (max_dim / h))
+                img = img.resize((new_w, new_h), Image.Resampling.LANCZOS)
+                
+            # 2. Determine format and save
+            out_io = io.BytesIO()
+            has_transparency = img.mode in ("RGBA", "LA") or (img.mode == "P" and "transparency" in img.info)
+            
+            if has_transparency:
+                # Save as PNG with optimization to keep transparency
+                img.save(out_io, format="PNG", optimize=True)
+                mime_type = "image/png"
+            else:
+                # Save as JPEG with quality compression
+                if img.mode != "RGB":
+                    img = img.convert("RGB")
+                img.save(out_io, format="JPEG", quality=quality, optimize=True)
+                mime_type = "image/jpeg"
+                
+            optimized_bytes = out_io.getvalue()
+            
+            # Return optimized bytes only if they are smaller
+            if len(optimized_bytes) < len(img_bytes):
+                return optimized_bytes, mime_type
+                
+            # Otherwise return original
+            fallback_mime = content_type
+            if "jpg" in fallback_mime.lower():
+                fallback_mime = "image/jpeg"
+            return img_bytes, fallback_mime
+            
+        except Exception as e:
+            logger.warning(f"Failed to optimize image: {e}. Using original bytes.")
+            return img_bytes, content_type
 
     def _get_extension_from_mime(self, content_type: str) -> str:
         """Map mime type to common file extensions."""
@@ -1297,4 +1380,242 @@ class HTMLConverter(BaseConverter):
 </body>
 </html>
 """
+
+
+class EPUBConverter(BaseConverter):
+    """
+    Converts HTML content to a self-contained EPUB ebook containing downloaded images.
+    """
+    
+    @property
+    def file_extension(self) -> str:
+        return ".epub"
+
+    async def convert(self, html_content: str, base_url: str, article_slug: str) -> bytes:
+        # 1. Preprocess HTML
+        html_content = preprocess_html(html_content)
+        
+        # 2. Extract and download all images, mapping them to local EPUB paths
+        soup = BeautifulSoup(html_content, "lxml")
+        img_tags = soup.find_all("img")
+        
+        images_to_pack = []  # list of (epub_path, bytes, mime_type)
+        semaphore = asyncio.Semaphore(3)
+        
+        async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
+            download_tasks = []
+            img_rewrites = []
+            
+            for idx, img in enumerate(img_tags):
+                src = extract_real_image_src(img)
+                if not src:
+                    continue
+                
+                # Check for base64 encoded images
+                if src.startswith("data:image/"):
+                    # Decode base64 and add to images to pack
+                    try:
+                        pattern = re.compile(r'^data:image/(\w+);base64,(.*)$')
+                        match = pattern.match(src)
+                        if match:
+                            ext = match.group(1)
+                            img_bytes = base64.b64decode(match.group(2))
+                            mime = f"image/{ext}"
+                            epub_img_name = f"img_{idx}.{ext}"
+                            images_to_pack.append((f"OEBPS/images/{epub_img_name}", img_bytes, mime))
+                            img["src"] = f"images/{epub_img_name}"
+                    except Exception as e:
+                        logger.error(f"Error parsing inline base64 image: {e}")
+                    continue
+                
+                absolute_url = urljoin(base_url, src)
+                task = self._download_single_image_bytes(client, absolute_url, semaphore, base_url)
+                download_tasks.append(task)
+                img_rewrites.append((img, idx, task, absolute_url))
+                
+            if download_tasks:
+                results = await asyncio.gather(*download_tasks, return_exceptions=True)
+                for img, idx, task, absolute_url in img_rewrites:
+                    idx_task = download_tasks.index(task)
+                    result = results[idx_task]
+                    
+                    if isinstance(result, Exception) or not result:
+                        logger.warning(f"Failed to download image for EPUB {absolute_url}: {result}")
+                        # Fallback to the absolute URL in EPUB
+                        img["src"] = absolute_url
+                    else:
+                        img_bytes, mime_type = result
+                        ext = self._get_extension_from_mime(mime_type)
+                        if not ext:
+                            ext = ".jpg"
+                        epub_img_name = f"img_{idx}{ext}"
+                        images_to_pack.append((f"OEBPS/images/{epub_img_name}", img_bytes, mime_type))
+                        img["src"] = f"images/{epub_img_name}"
+                        
+        # Ensure all tables are wrapped correctly, similar to HTML
+        for table in soup.find_all("table"):
+            table.wrap(soup.new_tag("div", attrs={"class": "table-container"}))
+            
+        # Get title from h1
+        h1_tag = soup.find("h1")
+        title_text = h1_tag.get_text() if h1_tag else "Saved Article"
+        
+        # Build XHTML content
+        xhtml_content = self._build_xhtml(title_text, soup)
+        
+        # Pack everything into an EPUB zip in memory
+        epub_io = io.BytesIO()
+        book_uuid = str(uuid.uuid4())
+        
+        with zipfile.ZipFile(epub_io, "w", zipfile.ZIP_DEFLATED) as epub:
+            # 1. mimetype (MUST be first and uncompressed!)
+            epub.writestr("mimetype", "application/epub+zip", compress_type=zipfile.ZIP_STORED)
+            
+            # 2. container.xml
+            container_xml = (
+                '<?xml version="1.0" encoding="UTF-8"?>\n'
+                '<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">\n'
+                '  <rootfiles>\n'
+                '    <rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/>\n'
+                '  </rootfiles>\n'
+                '</container>'
+            )
+            epub.writestr("META-INF/container.xml", container_xml)
+            
+            # 3. style.css
+            style_css = (
+                'body {\n'
+                '  font-family: -apple-system, system-ui, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;\n'
+                '  line-height: 1.6;\n'
+                '  margin: 5%;\n'
+                '  color: #1a1a1a;\n'
+                '}\n'
+                'h1 {\n'
+                '  font-size: 1.8em;\n'
+                '  line-height: 1.2;\n'
+                '  margin-bottom: 0.5em;\n'
+                '}\n'
+                'h2 {\n'
+                '  font-size: 1.4em;\n'
+                '  margin-top: 1.5em;\n'
+                '  margin-bottom: 0.5em;\n'
+                '}\n'
+                'p {\n'
+                '  margin-bottom: 1em;\n'
+                '}\n'
+                'img {\n'
+                '  max-width: 100%;\n'
+                '  height: auto;\n'
+                '  display: block;\n'
+                '  margin: 1.5em auto;\n'
+                '  border-radius: 4px;\n'
+                '}\n'
+                'blockquote {\n'
+                '  margin: 1em 0;\n'
+                '  padding-left: 1em;\n'
+                '  border-left: 4px solid #ccc;\n'
+                '  color: #555;\n'
+                '  font-style: italic;\n'
+                '}\n'
+                'pre, code {\n'
+                '  font-family: Consolas, Monaco, monospace;\n'
+                '  background-color: #f4f4f4;\n'
+                '  padding: 0.2em 0.4em;\n'
+                '  border-radius: 3px;\n'
+                '}\n'
+                'pre {\n'
+                '  padding: 1em;\n'
+                '  overflow-x: auto;\n'
+                '}\n'
+            )
+            epub.writestr("OEBPS/style.css", style_css)
+            
+            # 4. article.xhtml
+            epub.writestr("OEBPS/article.xhtml", xhtml_content)
+            
+            # 5. Pack images
+            manifest_images = []
+            for path, data, mime in images_to_pack:
+                epub.writestr(path, data)
+                img_id = Path(path).name.replace(".", "_")
+                img_href = path.replace("OEBPS/", "")
+                manifest_images.append(f'<item id="{img_id}" href="{img_href}" media-type="{mime}"/>')
+                
+            # 6. toc.ncx
+            toc_ncx = (
+                '<?xml version="1.0" encoding="UTF-8"?>\n'
+                '<!DOCTYPE ncx PUBLIC "-//NISO//DTD ncx 2005-1//EN" "http://www.daisy.org/z3986/2005/ncx-2005-1.dtd">\n'
+                '<ncx xmlns="http://www.daisy.org/z3986/2005/ncx/" version="2005-1">\n'
+                '  <head>\n'
+                f'    <meta name="dtb:uid" content="urn:uuid:{book_uuid}"/>\n'
+                '    <meta name="dtb:depth" content="1"/>\n'
+                '    <meta name="dtb:totalPageCount" content="0"/>\n'
+                '    <meta name="dtb:maxPageNumber" content="0"/>\n'
+                '  </head>\n'
+                '  <docTitle>\n'
+                f'    <text>{title_text}</text>\n'
+                '  </docTitle>\n'
+                '  <navMap>\n'
+                '    <navPoint id="navpoint-1" playOrder="1">\n'
+                '      <navLabel>\n'
+                f'        <text>{title_text}</text>\n'
+                '      </navLabel>\n'
+                '      <content src="article.xhtml"/>\n'
+                '    </navPoint>\n'
+                '  </navMap>\n'
+                '</ncx>'
+            )
+            epub.writestr("OEBPS/toc.ncx", toc_ncx)
+            
+            # 7. content.opf
+            manifest_img_str = "\n    ".join(manifest_images)
+            content_opf = (
+                '<?xml version="1.0" encoding="UTF-8"?>\n'
+                '<package xmlns="http://www.idpf.org/2007/opf" unique-identifier="BookId" version="2.0">\n'
+                '  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:opf="http://www.idpf.org/2007/opf">\n'
+                f'    <dc:title>{title_text}</dc:title>\n'
+                '    <dc:language>ru</dc:language>\n'
+                f'    <dc:identifier id="BookId">urn:uuid:{book_uuid}</dc:identifier>\n'
+                '    <dc:creator>Read It Later</dc:creator>\n'
+                '    <dc:date>2026-05-30</dc:date>\n'
+                '  </metadata>\n'
+                '  <manifest>\n'
+                '    <item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/>\n'
+                '    <item id="style" href="style.css" media-type="text/css"/>\n'
+                '    <item id="content" href="article.xhtml" media-type="application/xhtml+xml"/>\n'
+                f'    {manifest_img_str}\n'
+                '  </manifest>\n'
+                '  <spine toc="ncx">\n'
+                '    <itemref idref="content"/>\n'
+                '  </spine>\n'
+                '</package>'
+            )
+            epub.writestr("OEBPS/content.opf", content_opf)
+            
+        return epub_io.getvalue()
+
+    def _build_xhtml(self, title: str, soup: BeautifulSoup) -> str:
+        """
+        Build valid XHTML file content for the article.
+        """
+        body_content = ""
+        if soup.body:
+            body_content = "".join(str(child) for child in soup.body.children)
+        else:
+            body_content = str(soup)
+            
+        return (
+            '<?xml version="1.0" encoding="UTF-8"?>\n'
+            '<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN" "http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd">\n'
+            '<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="ru">\n'
+            '<head>\n'
+            '  <meta http-equiv="Content-Type" content="application/xhtml+xml; charset=utf-8" />\n'
+            f'  <title>{title}</title>\n'
+            '  <link rel="stylesheet" href="style.css" type="text/css" />\n'
+            '</head>\n'
+            '<body>\n'
+            f'{body_content}\n'
+            '</body>\n'
+            '</html>'
+        )
 
