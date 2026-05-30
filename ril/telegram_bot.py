@@ -47,16 +47,39 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     welcome_text = (
         "👋 *Привет! Я твой бот Read It Later (RIL).*\n\n"
-        "Пришли мне любую ссылку, я очищу её от лишней рекламы, сохраню локально с картинками и отправлю тебе .md файл с интерактивным меню.\n\n"
+        "Пришли мне любую ссылку, я очищу её от лишней рекламы, сохраню локально с картинками и отправлю тебе файл статьи.\n\n"
         "ℹ️ *Доступные команды:*\n"
         "📊 /stats — Показать статистику библиотеки\n"
         "📋 /list — Открыть интерактивный список статей\n"
+        "⚙️ /format — Выбрать формат сохранения по умолчанию (Markdown / HTML)\n"
         "🔍 /search <запрос> — Поиск по архиву\n"
         "📥 /get <ID> — Получить файл по ID статьи\n"
         "🗑️ /delete <ID> — Быстрое удаление по ID\n"
         "⚠️ /reset — Очистить библиотеку"
     )
     await update.message.reply_text(welcome_text, parse_mode="Markdown")
+
+@check_user
+async def format_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handler for the /format command."""
+    try:
+        await update.message.delete()
+    except Exception:
+        pass
+        
+    current_format = context.user_data.get("format", "markdown")
+    msg = (
+        f"⚙️ *Настройка формата сохранения*\n\n"
+        f"Текущий формат по умолчанию: *{current_format.upper()}*\n\n"
+        f"Выберите новый формат по умолчанию:"
+    )
+    keyboard = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("📄 Markdown", callback_data="set_format:markdown"),
+            InlineKeyboardButton("🌐 HTML", callback_data="set_format:html")
+        ]
+    ])
+    await update.message.reply_text(msg, reply_markup=keyboard, parse_mode="Markdown")
 
 @check_user
 async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -397,11 +420,22 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("ℹ️ Пришлите мне ссылку, чтобы сохранить статью в архив.")
         return
         
+    text_lower = text.lower()
+    if "html" in text_lower:
+        fmt = "html"
+    elif "markdown" in text_lower or "md" in text_lower:
+        fmt = "markdown"
+    else:
+        fmt = context.user_data.get("format", "markdown")
+        
+    from ril.converters import MarkdownConverter, HTMLConverter
+    converter = HTMLConverter() if fmt == "html" else MarkdownConverter()
+        
     for url in urls:
-        status_msg = await update.message.reply_text(f"⏳ Начинаю импорт: {url}...")
+        status_msg = await update.message.reply_text(f"⏳ Начинаю импорт ({fmt.upper()}): {url}...")
         try:
             # Process URL through core pipeline
-            res = await core.process_url(url)
+            res = await core.process_url(url, converter=converter)
             
             # Form response
             title = res['title']
@@ -585,6 +619,27 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 pass
         else:
             await query.answer("❌ Не удалось удалить.", show_alert=True)
+            
+    elif data.startswith("set_format:"):
+        fmt = data.split(":")[1]
+        context.user_data["format"] = fmt
+        await query.answer(f"✅ Формат изменен на {fmt.upper()}")
+        
+        msg = (
+            f"⚙️ *Настройка формата сохранения*\n\n"
+            f"Текущий формат по умолчанию изменен на: *{fmt.upper()}*\n\n"
+            f"Все новые статьи будут сохраняться в этом формате."
+        )
+        keyboard = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("📄 Markdown", callback_data="set_format:markdown"),
+                InlineKeyboardButton("🌐 HTML", callback_data="set_format:html")
+            ]
+        ])
+        try:
+            await query.edit_message_text(msg, reply_markup=keyboard, parse_mode="Markdown")
+        except Exception:
+            pass
 
 def run_bot():
     """Start the Telegram Bot."""
@@ -603,6 +658,7 @@ def run_bot():
     app.add_handler(CommandHandler("get", get_command))
     app.add_handler(CommandHandler("read", get_command))
     app.add_handler(CommandHandler("delete", delete_command))
+    app.add_handler(CommandHandler("format", format_command))
     app.add_handler(CommandHandler("reset", reset_command))
     app.add_handler(CommandHandler("reset_confirm", reset_confirm_command))
     

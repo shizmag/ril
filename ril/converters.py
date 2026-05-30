@@ -864,6 +864,52 @@ class HTMLConverter(BaseConverter):
         # 3. Construct premium self-contained HTML document
         soup = BeautifulSoup(html_with_b64_images, "lxml")
         
+        # Identify illustration vs inline images
+        for img in soup.find_all("img"):
+            is_inline = False
+            for sib in img.previous_siblings:
+                if sib.name is None:
+                    if str(sib).strip():
+                        is_inline = True
+                        break
+                elif sib.name in {"a", "span", "b", "strong", "i", "em", "code", "del", "strike", "s"}:
+                    is_inline = True
+                    break
+                else:
+                    break
+            if not is_inline:
+                for sib in img.next_siblings:
+                    if sib.name is None:
+                        if str(sib).strip():
+                            is_inline = True
+                            break
+                    elif sib.name in {"a", "span", "b", "strong", "i", "em", "code", "del", "strike", "s"}:
+                        is_inline = True
+                        break
+                    else:
+                        break
+            
+            # Check for explicitly small dimensions
+            w = img.get("width")
+            h = img.get("height")
+            try:
+                if (w and int(w) <= 40) or (h and int(h) <= 40):
+                    is_inline = True
+            except ValueError:
+                pass
+                
+            if not is_inline:
+                classes = img.get("class", [])
+                if isinstance(classes, str):
+                    classes = [classes]
+                img["class"] = classes + ["illustration"]
+
+        # Wrap all tables in a responsive table-container div
+        for table in soup.find_all("table"):
+            parent = table.parent
+            if not (parent and parent.name == "div" and parent.get("class") == ["table-container"]):
+                table.wrap(soup.new_tag("div", attrs={"class": "table-container"}))
+
         # Extract title from h1 if available
         h1_tag = soup.find("h1")
         title_text = h1_tag.get_text() if h1_tag else "Сохраненная статья"
@@ -987,6 +1033,10 @@ class HTMLConverter(BaseConverter):
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
     <style>
+        *, *::before, *::after {{
+            box-sizing: border-box;
+        }}
+
         :root {{
             --bg-color: #0f172a;
             --text-color: #f1f5f9;
@@ -1027,6 +1077,10 @@ class HTMLConverter(BaseConverter):
             display: flex;
             justify-content: center;
             transition: background-color 0.3s ease, color 0.3s ease;
+            word-wrap: break-word;
+            overflow-wrap: break-word;
+            -webkit-font-smoothing: antialiased;
+            -moz-osx-font-smoothing: grayscale;
         }}
 
         article {{
@@ -1042,6 +1096,8 @@ class HTMLConverter(BaseConverter):
             margin-bottom: 1rem;
             letter-spacing: -0.025em;
             transition: color 0.3s ease;
+            overflow-wrap: break-word;
+            word-break: break-word;
         }}
 
         h1 {{
@@ -1081,8 +1137,13 @@ class HTMLConverter(BaseConverter):
         img {{
             max-width: 100%;
             height: auto;
+            vertical-align: middle;
+        }}
+
+        img.illustration {{
+            display: block;
+            margin: 2rem auto;
             border-radius: 12px;
-            margin: 2rem 0;
             box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.2);
             border: 1px solid var(--border-color);
             transition: border-color 0.3s ease;
@@ -1112,6 +1173,8 @@ class HTMLConverter(BaseConverter):
             border-radius: 6px;
             border: 1px solid var(--border-color);
             transition: background-color 0.3s ease, border-color 0.3s ease, color 0.3s ease;
+            word-wrap: break-word;
+            overflow-wrap: break-word;
         }}
 
         pre {{
@@ -1130,6 +1193,8 @@ class HTMLConverter(BaseConverter):
             padding: 0;
             border: none;
             font-size: 0.95rem;
+            word-wrap: normal;
+            overflow-wrap: normal;
         }}
 
         ul, ol {{
@@ -1147,6 +1212,41 @@ class HTMLConverter(BaseConverter):
             height: 1px;
             background: linear-gradient(to right, transparent, var(--border-color), transparent);
             margin: 3rem 0;
+        }}
+
+        .table-container {{
+            width: 100%;
+            overflow-x: auto;
+            margin: 2rem 0;
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            background-color: var(--card-bg);
+            transition: border-color 0.3s ease, background-color 0.3s ease;
+            -webkit-overflow-scrolling: touch;
+        }}
+
+        table {{
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.95rem;
+            text-align: left;
+        }}
+
+        th, td {{
+            padding: 0.75rem 1rem;
+            border-bottom: 1px solid var(--border-color);
+            color: var(--text-color);
+            transition: border-color 0.3s ease, color 0.3s ease;
+        }}
+
+        th {{
+            background-color: var(--card-bg);
+            font-weight: 600;
+            color: var(--title-color);
+        }}
+
+        tr:last-child td {{
+            border-bottom: none;
         }}
         
         .article-footer {{
@@ -1191,6 +1291,66 @@ class HTMLConverter(BaseConverter):
             stroke-width: 2;
             stroke-linecap: round;
             stroke-linejoin: round;
+        }}
+
+        @media (max-width: 640px) {{
+            body {{
+                padding: 1.5rem 1rem;
+                font-size: 1rem;
+            }}
+            
+            h1 {{
+                font-size: 1.8rem;
+                margin-top: 1rem;
+                padding-bottom: 0.75rem;
+            }}
+            
+            h2 {{
+                font-size: 1.4rem;
+                margin-top: 2rem;
+            }}
+            
+            h3 {{
+                font-size: 1.2rem;
+                margin-top: 1.75rem;
+            }}
+            
+            pre {{
+                padding: 1rem;
+                margin: 1.5rem 0;
+                border-radius: 8px;
+            }}
+            
+            pre code {{
+                font-size: 0.85rem;
+            }}
+            
+            blockquote {{
+                margin: 1.5rem 0;
+                padding: 0.75rem 1rem;
+            }}
+            
+            img.illustration {{
+                margin: 1.5rem auto;
+                border-radius: 8px;
+            }}
+            
+            .table-container {{
+                margin: 1.5rem 0;
+                border-radius: 8px;
+            }}
+            
+            th, td {{
+                padding: 0.5rem 0.75rem;
+                font-size: 0.85rem;
+            }}
+            
+            #theme-toggle {{
+                bottom: 1.5rem;
+                right: 1.5rem;
+                width: 3rem;
+                height: 3rem;
+            }}
         }}
     </style>
 </head>

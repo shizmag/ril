@@ -19,7 +19,7 @@ from ril.mcp_server import (
 @pytest.mark.asyncio
 async def test_mcp_process_url(mocker, setup_test_environment):
     # Mock core.process_url to avoid network crawl
-    mocker.patch(
+    mock_process = mocker.patch(
         "ril.core.process_url",
         new_callable=AsyncMock,
         return_value={
@@ -35,6 +35,17 @@ async def test_mcp_process_url(mocker, setup_test_environment):
     assert "Saved successfully!" in response
     assert "Quantum Computation" in response
     assert "500 words" in response
+    
+    # Test valid html format
+    response_html = await process_url("https://example.com/quantum", format="html")
+    assert "Saved successfully!" in response_html
+    # Check that HTMLConverter was passed
+    from ril.converters import HTMLConverter
+    assert isinstance(mock_process.call_args[1]["converter"], HTMLConverter)
+
+    # Test invalid format
+    response_invalid = await process_url("https://example.com/quantum", format="pdf")
+    assert "Error: format must be either" in response_invalid
 
 @pytest.mark.asyncio
 async def test_mcp_process_url_failure(mocker, setup_test_environment):

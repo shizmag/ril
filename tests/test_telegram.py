@@ -139,7 +139,7 @@ async def test_telegram_handle_message(mocker, setup_test_environment):
     
     await telegram_bot.handle_message(update2, context2)
     
-    mock_process.assert_called_once_with("https://agents.ai/future")
+    mock_process.assert_called_once_with("https://agents.ai/future", converter=mocker.ANY)
     update2.message.delete.assert_called_once()
     context2.bot.delete_message.assert_called_once_with(chat_id=update2.effective_chat.id, message_id=999)
     # The last reply_text call should be the fallback warning
@@ -286,6 +286,70 @@ async def test_telegram_handle_message_no_text(mocker):
     await telegram_bot.handle_message(update, context)
     update.message.reply_text.assert_not_called()
 
+@pytest.mark.asyncio
+async def test_telegram_format_command(mocker):
+    mocker.patch("ril.telegram_bot.ALLOWED_TELEGRAM_USERS", [12345])
+    update, context = create_mock_update(user_id=12345)
+    context.user_data = {}
+    await telegram_bot.format_command(update, context)
+    update.message.reply_text.assert_called_once()
+    reply_msg = update.message.reply_text.call_args[0][0]
+    assert "Настройка формата сохранения" in reply_msg
+    assert "MARKDOWN" in reply_msg
+
+@pytest.mark.asyncio
+async def test_telegram_callback_set_format(mocker):
+    query = MagicMock()
+    query.from_user.id = 12345
+    query.data = "set_format:html"
+    query.answer = AsyncMock()
+    query.edit_message_text = AsyncMock()
+    
+    update = MagicMock()
+    update.callback_query = query
+    
+    context = MagicMock()
+    context.user_data = {}
+    
+    mocker.patch("ril.telegram_bot.ALLOWED_TELEGRAM_USERS", [12345])
+    
+    await telegram_bot.callback_handler(update, context)
+    
+    query.answer.assert_called_once_with("✅ Формат изменен на HTML")
+    assert context.user_data["format"] == "html"
+    query.edit_message_text.assert_called_once()
+    assert "Текущий формат по умолчанию изменен на: *HTML*" in query.edit_message_text.call_args[0][0]
+
+@pytest.mark.asyncio
+async def test_telegram_handle_message_with_format(mocker, setup_test_environment):
+    mocker.patch("ril.telegram_bot.ALLOWED_TELEGRAM_USERS", [12345])
+    
+    # Mock core.process_url to verify format detection
+    mock_process = mocker.patch(
+        "ril.core.process_url",
+        new_callable=AsyncMock,
+        return_value={
+            "id": 10,
+            "title": "HTML article",
+            "file_path": "/mock.html",
+            "word_count": 100
+        }
+    )
+    
+    status_msg = MagicMock()
+    status_msg.message_id = 999
+    
+    # 1. Test explicit "html" in message
+    update, context = create_mock_update(user_id=12345, text="https://test.com/page html")
+    update.message.reply_text = AsyncMock(return_value=status_msg)
+    mocker.patch("os.path.exists", return_value=False)
+    context.user_data = {"format": "markdown"}
+    
+    await telegram_bot.handle_message(update, context)
+    
+    from ril.converters import HTMLConverter
+    assert isinstance(mock_process.call_args[1]["converter"], HTMLConverter)
+
 def test_telegram_run_bot(mocker):
     mock_app = MagicMock()
     mock_builder = MagicMock()
@@ -304,7 +368,7 @@ def test_telegram_run_bot(mocker):
     telegram_bot.run_bot()
     
     mock_app_built.run_polling.assert_called_once()
-    assert mock_app_built.add_handler.call_count == 11
+    assert mock_app_built.add_handler.call_count == 12
 
 def test_telegram_run_bot_no_token(mocker):
     mocker.patch("ril.telegram_bot.TELEGRAM_TOKEN", None)

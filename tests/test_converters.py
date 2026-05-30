@@ -356,6 +356,57 @@ async def test_html_converter_images(mocker, setup_test_environment):
     assert "data:image/png;base64,iVBORw0KGgo" in result
 
 
+@pytest.mark.asyncio
+async def test_html_converter_mobile_responsive(mocker, setup_test_environment):
+    from ril.converters import HTMLConverter
+    from bs4 import BeautifulSoup
+    converter = HTMLConverter()
+    
+    # Mock httpx image download
+    mock_response = MagicMock()
+    mock_response.content = b"fake-bytes"
+    mock_response.headers = {"content-type": "image/png"}
+    mock_response.raise_for_status = MagicMock()
+    mocker.patch("httpx.AsyncClient.get", return_value=mock_response)
+    
+    html = (
+        "<h1>Заголовок</h1>"
+        "<p>Формула в тексте <img src=\"https://example.com/formula.png\" alt=\"formula\" width=\"30\" /> и продолжение текста.</p>"
+        "<div><img src=\"https://example.com/illustration.png\" alt=\"big picture\" /></div>"
+        "<table><tr><th>Колонка</th></tr><tr><td>Данные</td></tr></table>"
+    )
+    
+    result = await converter.convert(html, "https://example.com", "test-html-mobile")
+    
+    # Parse output to verify layout structure
+    soup = BeautifulSoup(result, "lxml")
+    
+    # 1. Inline image should NOT have illustration class
+    formula_img = soup.find("img", alt="formula")
+    assert formula_img is not None
+    classes = formula_img.get("class", [])
+    assert "illustration" not in classes
+    
+    # 2. Block/Illustration image SHOULD have illustration class
+    big_img = soup.find("img", alt="big picture")
+    assert big_img is not None
+    assert "illustration" in big_img.get("class", [])
+    
+    # 3. Table should be wrapped in table-container
+    table = soup.find("table")
+    assert table is not None
+    assert table.parent.name == "div"
+    assert table.parent.get("class") == ["table-container"]
+    
+    # 4. Viewport meta tag and media queries should exist
+    assert '<meta name="viewport" content="width=device-width, initial-scale=1.0">' in result
+    assert '@media (max-width: 640px)' in result
+    assert 'img.illustration' in result
+    assert 'box-sizing: border-box' in result
+
+
+
+
 
 
 

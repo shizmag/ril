@@ -14,15 +14,21 @@ logger = logging.getLogger("ril-mcp")
 mcp = FastMCP("Read It Later (RIL)")
 
 @mcp.tool()
-async def process_url(url: str) -> str:
+async def process_url(url: str, format: str = "markdown") -> str:
     """
-    Download, clean, download images, convert to Markdown, and save a webpage.
+    Download, clean, download images, convert, and save a webpage.
     
     Args:
         url: The web link/URL of the article to capture.
+        format: The format to save the article, either 'markdown' (default) or 'html'.
     """
     try:
-        result = await core.process_url(url)
+        if format not in ("markdown", "html"):
+            return "Error: format must be either 'markdown' or 'html'"
+            
+        from ril.converters import MarkdownConverter, HTMLConverter
+        converter = HTMLConverter() if format == "html" else MarkdownConverter()
+        result = await core.process_url(url, converter=converter)
         return (
             f"Saved successfully!\n"
             f"Title: {result['title']}\n"
