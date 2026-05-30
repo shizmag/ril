@@ -2,7 +2,7 @@ import pytest
 import sys
 from unittest.mock import patch, AsyncMock, MagicMock
 from ril import db
-from main import main
+from ril.cli import main
 
 def test_cli_stats_empty(setup_test_environment, capsys):
     with patch("sys.argv", ["main.py", "stats"]):
