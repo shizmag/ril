@@ -8,7 +8,7 @@ from typing import Dict, Any, Optional
 from ril import config
 from ril.crawler import fetch_html
 from ril.readability_utils import extract_article
-from ril.converters import BaseConverter, MarkdownConverter
+from ril.converters import BaseConverter, MarkdownConverter, HTMLConverter
 from ril import db
 
 logger = logging.getLogger(__name__)

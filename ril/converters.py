@@ -323,7 +323,20 @@ def preprocess_html(html: str) -> str:
                 is_loose = False
                 break
         if is_loose:
-            a.wrap(soup.new_tag("p"))
+            # Check siblings: if the parent contains any non-empty text or inline tags, this is an inline link context
+            has_inline_context = False
+            for sib in a.parent.children:
+                if sib == a:
+                    continue
+                if sib.name is None:
+                    if str(sib).strip():
+                        has_inline_context = True
+                        break
+                elif sib.name in {"a", "span", "b", "strong", "i", "em", "code", "del", "strike", "s"}:
+                    has_inline_context = True
+                    break
+            if not has_inline_context:
+                a.wrap(soup.new_tag("p"))
 
     # 6. Merge split paragraphs
     merge_split_paragraphs(soup)
@@ -359,6 +372,31 @@ def collapse_links(md: str) -> str:
 def fix_lists_and_links(md: str) -> str:
     """Convert consecutive lines of standalone links into standard bullet lists, removing empty lines between them."""
     lines = md.split('\n')
+    new_lines = []
+    link_pattern = re.compile(r'(\[[^\]]+?\]\([^\)]+?\))')
+    
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            new_lines.append(line)
+            continue
+            
+        links = link_pattern.findall(line)
+        if len(links) >= 2:
+            # Check if line consists only of these links and whitespace
+            temp_line = line
+            for link in links:
+                temp_line = temp_line.replace(link, '', 1)
+            if not temp_line.strip():
+                # Get the indentation of the original line
+                indent = len(line) - len(line.lstrip())
+                for link in links:
+                    new_lines.append(' ' * indent + f"* {link}")
+                continue
+                
+        new_lines.append(line)
+        
+    lines = new_lines
     
     # Identify indices of non-empty lines
     non_empty_indices = [i for i, line in enumerate(lines) if line.strip() != '']
@@ -803,3 +841,398 @@ class MarkdownConverter(BaseConverter):
         elif "image/svg+xml" in content_type:
             return ".svg"
         return ""
+
+
+class HTMLConverter(BaseConverter):
+    """
+    Converts HTML content to cleaned, self-contained HTML (using base64-embedded images)
+    styled with a premium, responsive reading layout and light/dark theme toggle.
+    """
+
+    @property
+    def file_extension(self) -> str:
+        return ".html"
+
+    async def convert(self, html_content: str, base_url: str, article_slug: str) -> str:
+        # 1. Preprocess HTML
+        cleaned_html = preprocess_html(html_content)
+
+        # 2. Download and embed images as base64
+        logger.info(f"Embedding images as base64 for article: {article_slug}")
+        html_with_b64_images = await self._embed_images_as_base64(cleaned_html, base_url)
+
+        # 3. Construct premium self-contained HTML document
+        soup = BeautifulSoup(html_with_b64_images, "lxml")
+        
+        # Extract title from h1 if available
+        h1_tag = soup.find("h1")
+        title_text = h1_tag.get_text() if h1_tag else "Сохраненная статья"
+
+        # Get body children/content
+        if soup.body:
+            body_content = "".join(str(child) for child in soup.body.children)
+        else:
+            body_content = str(soup)
+
+        return self._wrap_in_template(title_text, body_content)
+
+    async def _embed_images_as_base64(self, html_content: str, base_url: str) -> str:
+        """
+        Find all img tags, download their content, and replace src with base64 data URI.
+        """
+        soup = BeautifulSoup(html_content, "lxml")
+        img_tags = soup.find_all("img")
+        
+        if not img_tags:
+            return str(soup)
+
+        download_tasks = []
+        img_rewrites = []
+        semaphore = asyncio.Semaphore(3)
+
+        async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
+            for img in img_tags:
+                src = extract_real_image_src(img)
+                if not src:
+                    continue
+
+                # Keep base64 as is
+                if src.startswith("data:image/"):
+                    img["src"] = src
+                    continue
+
+                absolute_url = urljoin(base_url, src)
+                task = self._download_single_image_bytes(client, absolute_url, semaphore, base_url)
+                download_tasks.append(task)
+                img_rewrites.append((img, task, absolute_url))
+
+            if download_tasks:
+                results = await asyncio.gather(*download_tasks, return_exceptions=True)
+                for img, task, absolute_url in img_rewrites:
+                    idx = download_tasks.index(task)
+                    result = results[idx]
+
+                    if isinstance(result, Exception) or not result:
+                        logger.warning(f"Failed to embed image {absolute_url}: {result}")
+                        img["src"] = absolute_url  # fallback to original URL
+                    else:
+                        img_bytes, mime_type = result
+                        b64_str = base64.b64encode(img_bytes).decode("utf-8")
+                        img["src"] = f"data:{mime_type};base64,{b64_str}"
+
+        return str(soup)
+
+    async def _download_single_image_bytes(
+        self,
+        client: httpx.AsyncClient,
+        url: str,
+        semaphore: asyncio.Semaphore,
+        referer: Optional[str] = None
+    ) -> Optional[Tuple[bytes, str]]:
+        """
+        Download a single image and return its bytes and content-type.
+        """
+        async with semaphore:
+            try:
+                headers = {
+                    "User-Agent": (
+                        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                        "AppleWebKit/537.36 (KHTML, like Gecko) "
+                        "Chrome/122.0.0.0 Safari/537.36 (ReadItLaterBot/1.0; contact: support@readitlater-app.local)"
+                    ),
+                    "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
+                    "Accept-Language": "en-US,en;q=0.9,ru;q=0.8",
+                }
+                if referer:
+                    headers["Referer"] = referer
+
+                await asyncio.sleep(0.15)
+                retries = 3
+                backoff = 0.5
+                response = None
+
+                for attempt in range(retries):
+                    response = await client.get(url, headers=headers)
+                    if response.status_code == 429:
+                        retry_after = response.headers.get("Retry-After")
+                        try:
+                            delay = float(retry_after) if retry_after else backoff
+                        except ValueError:
+                            delay = backoff
+                        logger.warning(f"Rate limited (429) for image {url}. Retrying in {delay}s...")
+                        await asyncio.sleep(delay)
+                        backoff *= 2
+                        continue
+                    break
+
+                if not response:
+                    raise Exception("No response received from image server")
+
+                response.raise_for_status()
+                content_type = response.headers.get("content-type", "image/jpeg")
+                return response.content, content_type
+            except Exception as e:
+                logger.error(f"Error downloading image bytes {url}: {e}")
+                return None
+
+    def _wrap_in_template(self, title: str, body_content: str) -> str:
+        """Wrap body content in a styled premium HTML document with Dark/Light theme."""
+        return f"""<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{title}</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+    <style>
+        :root {{
+            --bg-color: #0f172a;
+            --text-color: #f1f5f9;
+            --title-color: #ffffff;
+            --primary-color: #38bdf8;
+            --secondary-color: #94a3b8;
+            --card-bg: #1e293b;
+            --border-color: #334155;
+            --quote-bg: #1e293b;
+            --quote-border: #38bdf8;
+            --code-bg: #1e293b;
+            --code-text: #f472b6;
+            --max-width: 720px;
+        }}
+
+        :root.light {{
+            --bg-color: #f8fafc;
+            --text-color: #334155;
+            --title-color: #0f172a;
+            --primary-color: #0284c7;
+            --secondary-color: #64748b;
+            --card-bg: #f1f5f9;
+            --border-color: #e2e8f0;
+            --quote-bg: #f1f5f9;
+            --quote-border: #0284c7;
+            --code-bg: #f1f5f9;
+            --code-text: #db2777;
+        }}
+
+        body {{
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            line-height: 1.8;
+            font-size: 1.125rem;
+            margin: 0;
+            padding: 3rem 1.5rem;
+            display: flex;
+            justify-content: center;
+            transition: background-color 0.3s ease, color 0.3s ease;
+        }}
+
+        article {{
+            max-width: var(--max-width);
+            width: 100%;
+        }}
+
+        h1, h2, h3, h4, h5, h6 {{
+            color: var(--title-color);
+            font-weight: 800;
+            line-height: 1.3;
+            margin-top: 2.5rem;
+            margin-bottom: 1rem;
+            letter-spacing: -0.025em;
+            transition: color 0.3s ease;
+        }}
+
+        h1 {{
+            font-size: 2.5rem;
+            border-bottom: 1px solid var(--border-color);
+            padding-bottom: 1rem;
+            margin-top: 1rem;
+        }}
+
+        h2 {{
+            font-size: 1.875rem;
+            border-bottom: 1px solid var(--border-color);
+            padding-bottom: 0.5rem;
+        }}
+
+        h3 {{
+            font-size: 1.5rem;
+        }}
+
+        p {{
+            margin-top: 0;
+            margin-bottom: 1.5rem;
+        }}
+
+        a {{
+            color: var(--primary-color);
+            text-decoration: none;
+            border-bottom: 1px dashed var(--primary-color);
+            transition: all 0.2s ease;
+        }}
+
+        a:hover {{
+            color: var(--title-color);
+            border-bottom-style: solid;
+        }}
+
+        img {{
+            max-width: 100%;
+            height: auto;
+            border-radius: 12px;
+            margin: 2rem 0;
+            box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.2);
+            border: 1px solid var(--border-color);
+            transition: border-color 0.3s ease;
+        }}
+
+        blockquote {{
+            margin: 2rem 0;
+            padding: 1rem 1.5rem;
+            background-color: var(--quote-bg);
+            border-left: 4px solid var(--quote-border);
+            border-radius: 0 8px 8px 0;
+            font-style: italic;
+            color: var(--text-color);
+            transition: background-color 0.3s ease, border-left-color 0.3s ease;
+        }}
+        
+        blockquote p {{
+            margin-bottom: 0;
+        }}
+
+        code {{
+            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+            font-size: 0.9em;
+            background-color: var(--code-bg);
+            color: var(--code-text);
+            padding: 0.2em 0.4em;
+            border-radius: 6px;
+            border: 1px solid var(--border-color);
+            transition: background-color 0.3s ease, border-color 0.3s ease, color 0.3s ease;
+        }}
+
+        pre {{
+            background-color: var(--card-bg);
+            padding: 1.25rem;
+            border-radius: 12px;
+            overflow-x: auto;
+            border: 1px solid var(--border-color);
+            margin: 2rem 0;
+            transition: background-color 0.3s ease, border-color 0.3s ease;
+        }}
+
+        pre code {{
+            background-color: transparent;
+            color: var(--text-color);
+            padding: 0;
+            border: none;
+            font-size: 0.95rem;
+        }}
+
+        ul, ol {{
+            margin-top: 0;
+            margin-bottom: 1.5rem;
+            padding-left: 1.5rem;
+        }}
+
+        li {{
+            margin-bottom: 0.5rem;
+        }}
+
+        hr {{
+            border: 0;
+            height: 1px;
+            background: linear-gradient(to right, transparent, var(--border-color), transparent);
+            margin: 3rem 0;
+        }}
+        
+        .article-footer {{
+            margin-top: 4rem;
+            padding-top: 2rem;
+            border-top: 1px solid var(--border-color);
+            font-size: 0.875rem;
+            color: var(--secondary-color);
+            text-align: center;
+            transition: border-top-color 0.3s ease, color 0.3s ease;
+        }}
+
+        #theme-toggle {{
+            position: fixed;
+            bottom: 2rem;
+            right: 2rem;
+            width: 3.5rem;
+            height: 3.5rem;
+            border-radius: 50%;
+            background-color: var(--card-bg);
+            border: 1px solid var(--border-color);
+            color: var(--text-color);
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.3);
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+            z-index: 100;
+        }}
+        
+        #theme-toggle:hover {{
+            transform: scale(1.1);
+            background-color: var(--border-color);
+        }}
+        
+        #theme-toggle svg {{
+            width: 1.5rem;
+            height: 1.5rem;
+            fill: none;
+            stroke: currentColor;
+            stroke-width: 2;
+            stroke-linecap: round;
+            stroke-linejoin: round;
+        }}
+    </style>
+</head>
+<body>
+    <article>
+        {body_content}
+        <div class="article-footer">
+            Сохранено с помощью Read It Later Bot
+        </div>
+    </article>
+
+    <button id="theme-toggle" aria-label="Toggle theme">
+        <svg id="theme-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
+            <!-- Default sun icon -->
+            <circle cx="12" cy="12" r="4" />
+            <path d="M3 12h1m8-9v1m8 8h1m-9 8v1M5.6 5.6l.7.7m11.4-.7l-.7.7m0 11.4l.7.7m-11.4-.7l-.7.7" />
+        </svg>
+    </button>
+    <script>
+        const toggle = document.getElementById('theme-toggle');
+        const icon = document.getElementById('theme-icon');
+        
+        const sunIcon = `<circle cx="12" cy="12" r="4" /><path d="M3 12h1m8-9v1m8 8h1m-9 8v1M5.6 5.6l.7.7m11.4-.7l-.7.7m0 11.4l.7.7m-11.4-.7l-.7.7" />`;
+        const moonIcon = `<path d="M12 3c.132 0 .263 0 .393 0a7.5 7.5 0 0 0 7.92 12.446a9 9 0 1 1 -8.313 -12.454z" />`;
+        
+        const savedTheme = localStorage.getItem('theme');
+        const prefersLight = window.matchMedia('(prefers-color-scheme: light)').matches;
+        
+        if (savedTheme === 'light' || (!savedTheme && prefersLight)) {{
+            document.documentElement.classList.add('light');
+            icon.innerHTML = moonIcon;
+        }} else {{
+            icon.innerHTML = sunIcon;
+        }}
+        
+        toggle.addEventListener('click', () => {{
+            const isLight = document.documentElement.classList.toggle('light');
+            localStorage.setItem('theme', isLight ? 'light' : 'dark');
+            icon.innerHTML = isLight ? moonIcon : sunIcon;
+        }});
+    </script>
+</body>
+</html>
+"""
+

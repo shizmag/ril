@@ -251,6 +251,13 @@ async def test_markdown_converter_premium_formatting(setup_test_environment):
     res_8 = await converter.convert(html_8, "https://example.com", "test-premium-8")
     assert "* [Поиск истоков](#1)\n* [Становление](#2)" in res_8
 
+    # 9. List formation from a single line of consecutive links (TOC)
+    html_9 = (
+        "<p><a href=\"#1\">Поиск истоков</a> <a href=\"#2\">Становление</a></p>"
+    )
+    res_9 = await converter.convert(html_9, "https://example.com", "test-premium-9")
+    assert "* [Поиск истоков](#1)\n* [Становление](#2)" in res_9
+
 
 @pytest.mark.asyncio
 async def test_markdown_converter_lazy_loaded_images(mocker, setup_test_environment):
@@ -300,6 +307,54 @@ def test_fix_formatting_punctuation_image_spacing():
     input_md_2 = "подозрительно.[ссылка](http://example.com) кликай"
     output_md_2 = clean_markdown(input_md_2)
     assert "подозрительно. [ссылка](http://example.com)" in output_md_2
+
+
+@pytest.mark.asyncio
+async def test_html_converter_basic(setup_test_environment):
+    from ril.converters import HTMLConverter
+    converter = HTMLConverter()
+    assert converter.file_extension == ".html"
+    
+    html = "<h1>Заголовок статьи</h1><p>Какое-то интересное содержание.</p>"
+    result = await converter.convert(html, "https://example.com", "test-html-basic")
+    
+    assert "<!DOCTYPE html>" in result
+    assert "<title>Заголовок статьи</title>" in result
+    assert "Какое-то интересное содержание." in result
+    assert "theme-toggle" in result
+    assert "Inter" in result
+
+
+@pytest.mark.asyncio
+async def test_html_converter_images(mocker, setup_test_environment):
+    from ril.converters import HTMLConverter
+    converter = HTMLConverter()
+    
+    # Mock httpx.AsyncClient.get response for image download
+    mock_response = MagicMock()
+    mock_response.content = b"fake-jpeg-bytes"
+    mock_response.headers = {"content-type": "image/jpeg"}
+    mock_response.raise_for_status = MagicMock()
+    
+    mocker.patch("httpx.AsyncClient.get", return_value=mock_response)
+    
+    html = (
+        "<h1>Статья с картинками</h1>"
+        "<p>Картинка снаружи:</p>"
+        '<img src="https://example.com/logo.jpg" alt="Logo" />'
+        "<p>Уже base64 картинка:</p>"
+        '<img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==" />'
+    )
+    
+    result = await converter.convert(html, "https://example.com/page", "test-html-images")
+    
+    # Check that external image is now a base64 string
+    assert "data:image/jpeg;base64," in result
+    assert "ZmFrZS1qcGVnLWJ5dGVz" in result  # base64 for "fake-jpeg-bytes"
+    
+    # Check that the existing base64 image is preserved
+    assert "data:image/png;base64,iVBORw0KGgo" in result
+
 
 
 

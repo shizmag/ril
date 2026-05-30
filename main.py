@@ -13,11 +13,13 @@ def handle_add(args):
     """Import a URL from the command line."""
     print(f"Importing: {args.url}")
     try:
-        result = asyncio.run(core.process_url(args.url))
+        from ril.converters import MarkdownConverter, HTMLConverter
+        converter = HTMLConverter() if args.format == "html" else MarkdownConverter()
+        result = asyncio.run(core.process_url(args.url, converter=converter))
         print("Success!")
         print(f"Title:     {result['title']}")
         print(f"Words:     {result['word_count']}")
-        print(f"Markdown:  {result['file_path']}")
+        print(f"Saved:     {result['file_path']}")
     except Exception as e:
         print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)
@@ -141,6 +143,7 @@ def main():
     # add command
     parser_add = subparsers.add_parser("add", help="Add a webpage to the library")
     parser_add.add_argument("url", help="URL of the page to scrape")
+    parser_add.add_argument("--format", choices=["markdown", "html"], default="markdown", help="Format to save the article (default: markdown)")
     
     # search command
     parser_search = subparsers.add_parser("search", help="Search article content with FTS5")
