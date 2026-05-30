@@ -43,28 +43,17 @@ async def test_markdown_converter_images(mocker, setup_test_environment):
     # 1. Assert markdown format conversions
     assert "Here is an image:" in markdown_result
     
-    # 2. Assert relative image links are present in Markdown
-    # E.g. ![Logo](images/test-article/xxxx.png)
-    assert "images/test-article/" in markdown_result
-    assert ".png" in markdown_result
-    assert ".jpeg" in markdown_result
+    # 2. Assert reference image links are present in Markdown
+    assert "![Logo][img_ref_0]" in markdown_result
+    assert "![Base64][img_ref_1]" in markdown_result
     
-    # 3. Assert files are written to disk in library/images/test-article
+    # 3. Assert base64 representations are embedded at the end
+    assert "[img_ref_0]: data:image/png;base64,ZmFrZS1wbmctaW1hZ2UtYnl0ZXM=" in markdown_result
+    assert "[img_ref_1]: data:image/jpeg;base64,/9j/4AAQSkZJRgABAQEASABIAAD/2wBDAP//////////////////////////////////////////////////////////////////////////////////////wgALCAABAAEBAREA/8QAFBABAAAAAAAAAAAAAAAAAAAAAP/aAAgBAQABPxA=" in markdown_result
+    
+    # 4. Assert NO files/directories are written to disk in library/images/test-article
     img_dir = library_dir / "images" / "test-article"
-    assert img_dir.exists()
-    
-    # We should have two image files
-    files = list(img_dir.glob("*"))
-    assert len(files) == 2
-    
-    # Verify file content
-    png_files = [f for f in files if f.suffix == ".png"]
-    assert len(png_files) == 1
-    with open(png_files[0], "rb") as f:
-        assert f.read() == b"fake-png-image-bytes"
-        
-    jpeg_files = [f for f in files if f.suffix == ".jpeg"]
-    assert len(jpeg_files) == 1
+    assert not img_dir.exists() or len(list(img_dir.glob("*"))) == 0
 
 @pytest.mark.asyncio
 async def test_markdown_converter_edge_cases(mocker, setup_test_environment):
@@ -96,15 +85,12 @@ def test_get_extension_from_mime():
     assert converter._get_extension_from_mime("image/unsupported") == ""
 
 @pytest.mark.asyncio
-async def test_download_single_image_mime_fallbacks(mocker, setup_test_environment):
+async def test_download_single_image_bytes(mocker, setup_test_environment):
     converter = MarkdownConverter()
-    library_dir = setup_test_environment["library_dir"]
-    img_dir = library_dir / "images" / "test-fallbacks"
-    img_dir.mkdir(parents=True, exist_ok=True)
     
     mock_resp = MagicMock()
     mock_resp.content = b"bytes"
-    mock_resp.headers = {}
+    mock_resp.headers = {"content-type": "image/webp"}
     mock_resp.raise_for_status = MagicMock()
     
     client = MagicMock()
@@ -113,23 +99,15 @@ async def test_download_single_image_mime_fallbacks(mocker, setup_test_environme
     import asyncio
     sem = asyncio.Semaphore(1)
     
-    filename = await converter._download_single_image(
+    res = await converter._download_single_image_bytes(
         client,
         "https://example.com/image.webp",
-        img_dir,
-        "hash1",
         sem
     )
-    assert filename == "hash1.webp"
-    
-    filename2 = await converter._download_single_image(
-        client,
-        "https://example.com/image-no-ext",
-        img_dir,
-        "hash2",
-        sem
-    )
-    assert filename2 == "hash2.jpg"
+    assert res is not None
+    content, content_type = res
+    assert content == b"bytes"
+    assert content_type == "image/webp"
 
 @pytest.mark.asyncio
 async def test_markdown_converter_quotes_and_spacing(setup_test_environment):
@@ -290,8 +268,8 @@ async def test_markdown_converter_lazy_loaded_images(mocker, setup_test_environm
     
     res = await converter.convert(html, "https://example.com", "test-lazy-image")
     # Verified that placeholder is bypassed and real image path is resolved
-    assert "images/test-lazy-image/" in res
-    assert ".png" in res
+    assert "![Lazy Image][img_ref_0]" in res
+    assert "[img_ref_0]: data:image/png;base64,ZmFrZS1ieXRlcw==" in res
 
 
 def test_fix_formatting_punctuation_image_spacing():

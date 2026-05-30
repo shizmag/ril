@@ -5,7 +5,7 @@ import hashlib
 import logging
 import asyncio
 from abc import ABC, abstractmethod
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Dict, Any
 from urllib.parse import urljoin, urlparse, parse_qs, urlunparse, urlencode, unquote
 from pathlib import Path
 import httpx
@@ -34,6 +34,74 @@ class BaseConverter(ABC):
         Return the file extension for this format (e.g. '.md').
         """
         pass
+
+    async def _download_single_image_bytes(
+        self,
+        client: httpx.AsyncClient,
+        url: str,
+        semaphore: asyncio.Semaphore,
+        referer: Optional[str] = None
+    ) -> Optional[Tuple[bytes, str]]:
+        """
+        Download a single image and return its bytes and content-type.
+        """
+        async with semaphore:
+            try:
+                headers = {
+                    "User-Agent": (
+                        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                        "AppleWebKit/537.36 (KHTML, like Gecko) "
+                        "Chrome/122.0.0.0 Safari/537.36 (ReadItLaterBot/1.0; contact: support@readitlater-app.local)"
+                    ),
+                    "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
+                    "Accept-Language": "en-US,en;q=0.9,ru;q=0.8",
+                }
+                if referer:
+                    headers["Referer"] = referer
+
+                await asyncio.sleep(0.15)
+                retries = 3
+                backoff = 0.5
+                response = None
+
+                for attempt in range(retries):
+                    response = await client.get(url, headers=headers)
+                    if response.status_code == 429:
+                        retry_after = response.headers.get("Retry-After")
+                        try:
+                            delay = float(retry_after) if retry_after else backoff
+                        except ValueError:
+                            delay = backoff
+                        logger.warning(f"Rate limited (429) for image {url}. Retrying in {delay}s...")
+                        await asyncio.sleep(delay)
+                        backoff *= 2
+                        continue
+                    break
+
+                if not response:
+                    raise Exception("No response received from image server")
+
+                response.raise_for_status()
+                content_type = response.headers.get("content-type", "image/jpeg")
+                return response.content, content_type
+            except Exception as e:
+                logger.error(f"Error downloading image bytes {url}: {e}")
+                return None
+
+    def _get_extension_from_mime(self, content_type: str) -> str:
+        """Map mime type to common file extensions."""
+        content_type = content_type.lower()
+        if "image/png" in content_type:
+            return ".png"
+        elif "image/jpeg" in content_type or "image/jpg" in content_type:
+            return ".jpg"
+        elif "image/gif" in content_type:
+            return ".gif"
+        elif "image/webp" in content_type:
+            return ".webp"
+        elif "image/svg+xml" in content_type:
+            return ".svg"
+        return ""
 
 
 class CustomMarkdownConverter(markdownify.MarkdownConverter):
@@ -626,7 +694,7 @@ def clean_markdown(markdown_content: str) -> str:
 
 class MarkdownConverter(BaseConverter):
     """
-    Converts HTML content to Markdown and downloads images locally.
+    Converts HTML content to Markdown and embeds images as base64 reference links.
     """
     
     @property
@@ -637,9 +705,9 @@ class MarkdownConverter(BaseConverter):
         # 0. Preprocess HTML
         html_content = preprocess_html(html_content)
         
-        # 1. Download images and rewrite URLs in HTML
-        logger.info(f"Downloading images for article: {article_slug}")
-        html_with_local_images = await self._download_images(html_content, base_url, article_slug)
+        # 1. Download images and rewrite URLs in HTML to reference IDs
+        logger.info(f"Embedding images as reference base64 for article: {article_slug}")
+        html_with_refs, image_refs = await self._prepare_base64_references(html_content, base_url)
         
         # 2. Convert HTML to Markdown using custom converter
         logger.info("Converting HTML to Markdown")
@@ -647,200 +715,87 @@ class MarkdownConverter(BaseConverter):
             heading_style="ATX",
             code_language_callback=lambda el: el.get("class", [""])[0].replace("language-", "") if el.get("class") else ""
         )
-        markdown_content = converter.convert(html_with_local_images)
+        markdown_content = converter.convert(html_with_refs)
         
         # 3. Clean up formatting and extra newlines
         markdown_content = clean_markdown(markdown_content)
         
+        # 4. Post-process to replace inline references with reference-style links
+        # Replace `![alt](img_ref_N)` with `![alt][img_ref_N]`
+        for ref_id in image_refs.keys():
+            markdown_content = re.sub(
+                rf'!\[(.*?)\]\({ref_id}\)',
+                rf'![\1][{ref_id}]',
+                markdown_content
+            )
+            
+        # 5. Append references at the end
+        if image_refs:
+            markdown_content += "\n\n"
+            for ref_id, b64_uri in image_refs.items():
+                markdown_content += f"[{ref_id}]: {b64_uri}\n"
+                
         return markdown_content
 
-    async def _download_images(self, html_content: str, base_url: str, article_slug: str) -> str:
+    async def _prepare_base64_references(self, html_content: str, base_url: str) -> Tuple[str, Dict[str, str]]:
         """
-        Finds all image tags, downloads the images concurrently, and rewrites the image src.
-        Handles lazy loading attributes dynamically with rate-limiting and browser emulation.
+        Finds all image tags, downloads the images concurrently, and converts them to base64 URIs.
+        Replaces the img src in HTML with a reference ID (e.g. img_ref_1).
+        Returns the modified HTML and a dictionary mapping reference ID -> base64 URI.
         """
         soup = BeautifulSoup(html_content, "lxml")
         img_tags = soup.find_all("img")
         
         if not img_tags:
-            return str(soup)
+            return str(soup), {}
 
-        # Output directory for images
-        article_img_dir = config.LIBRARY_DIR / "images" / article_slug
-        article_img_dir.mkdir(parents=True, exist_ok=True)
-        
-        # Keep track of downloads to run them concurrently
         download_tasks = []
         img_rewrites = []
-        
-        # Limit image downloads to 3 concurrent requests to prevent triggering 429 Too Many Requests
         semaphore = asyncio.Semaphore(3)
+        image_refs = {}
         
-        async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
+        async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
             for idx, img in enumerate(img_tags):
                 src = extract_real_image_src(img)
                 if not src:
                     continue
                 
-                # Update HTML attribute immediately so markdownify sees the real URL
-                img["src"] = src
+                ref_id = f"img_ref_{idx}"
+                img["src"] = ref_id
                 
                 # Check for base64 encoded images
                 if src.startswith("data:image/"):
-                    filename = self._save_base64_image(src, article_slug, idx)
-                    if filename:
-                        img["src"] = f"images/{article_slug}/{filename}"
+                    image_refs[ref_id] = src
                     continue
                 
                 # Resolve relative URLs
                 absolute_url = urljoin(base_url, src)
                 
-                # Generate unique filename based on URL hash
-                url_hash = hashlib.md5(absolute_url.encode("utf-8")).hexdigest()
-                
-                # Schedule download task with Semaphore and referer
-                task = self._download_single_image(client, absolute_url, article_img_dir, url_hash, semaphore, base_url)
+                # Download bytes using the shared helper
+                task = self._download_single_image_bytes(client, absolute_url, semaphore, base_url)
                 download_tasks.append(task)
-                img_rewrites.append((img, task, absolute_url))
+                img_rewrites.append((ref_id, task, absolute_url))
             
-            # Execute all downloads concurrently
+            # Execute downloads concurrently
             if download_tasks:
                 results = await asyncio.gather(*download_tasks, return_exceptions=True)
                 
-                # Rewrite image sources with relative paths
-                for img, task, absolute_url in img_rewrites:
-                    idx = download_tasks.index(task)
-                    result = results[idx]
+                # Map results to reference IDs
+                for ref_id, task, absolute_url in img_rewrites:
+                    idx_task = download_tasks.index(task)
+                    result = results[idx_task]
                     
                     if isinstance(result, Exception) or not result:
-                        logger.warning(f"Failed to download image {absolute_url}: {result if isinstance(result, Exception) else 'None'}")
+                        logger.warning(f"Failed to download image for reference {ref_id} ({absolute_url}): {result}")
                         # Fallback to the absolute URL
-                        img["src"] = absolute_url
+                        image_refs[ref_id] = absolute_url
                     else:
-                        # Successfully saved locally, update the src to relative path
-                        relative_path = f"images/{article_slug}/{result}"
-                        img["src"] = relative_path
+                        img_bytes, mime_type = result
+                        b64_str = base64.b64encode(img_bytes).decode("utf-8")
+                        image_refs[ref_id] = f"data:{mime_type};base64,{b64_str}"
                         
-        return str(soup)
+        return str(soup), image_refs
 
-    async def _download_single_image(
-        self,
-        client: httpx.AsyncClient,
-        url: str,
-        save_dir: Path,
-        url_hash: str,
-        semaphore: asyncio.Semaphore,
-        referer: Optional[str] = None
-    ) -> Optional[str]:
-        """
-        Download a single image under semaphore concurrency limits and save it.
-        Features a hybrid User-Agent and automatic 429 rate-limit retries.
-        Returns the filename if successful, otherwise None.
-        """
-        async with semaphore:
-            try:
-                # Hybrid User-Agent bypasses Cloudflare bot protection and respects Wikipedia's API policies
-                headers = {
-                    "User-Agent": (
-                        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                        "AppleWebKit/537.36 (KHTML, like Gecko) "
-                        "Chrome/122.0.0.0 Safari/537.36 (ReadItLaterBot/1.0; contact: support@readitlater-app.local)"
-                    ),
-                    "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
-                    "Accept-Language": "en-US,en;q=0.9,ru;q=0.8",
-                }
-                if referer:
-                    headers["Referer"] = referer
-                    
-                # Small delay to throttle requests to the same host
-                await asyncio.sleep(0.15)
-                
-                # Fetch image with retry mechanism for rate limits (429)
-                retries = 3
-                backoff = 0.5
-                response = None
-                
-                for attempt in range(retries):
-                    response = await client.get(url, headers=headers)
-                    if response.status_code == 429:
-                        retry_after = response.headers.get("Retry-After")
-                        try:
-                            delay = float(retry_after) if retry_after else backoff
-                        except ValueError:
-                            delay = backoff
-                        logger.warning(f"Rate limited (429) for image {url}. Retrying in {delay}s (Attempt {attempt+1}/{retries})...")
-                        await asyncio.sleep(delay)
-                        backoff *= 2
-                        continue
-                    break
-                
-                if not response:
-                    raise Exception("No response received from image server")
-                    
-                response.raise_for_status()
-                
-                content_type = response.headers.get("content-type", "")
-                ext = self._get_extension_from_mime(content_type)
-                
-                if not ext:
-                    # Try getting extension from path
-                    parsed_url = urlparse(url)
-                    ext = Path(parsed_url.path).suffix.lower()
-                    if not ext or len(ext) > 5:
-                        ext = ".jpg"  # Default fallback
-                
-                filename = f"{url_hash}{ext}"
-                file_path = save_dir / filename
-                
-                # Save bytes to disk
-                with open(file_path, "wb") as f:
-                    f.write(response.content)
-                    
-                return filename
-            except Exception as e:
-                logger.error(f"Error downloading image {url}: {e}")
-                return None
-
-    def _save_base64_image(self, base64_str: str, article_slug: str, idx: int) -> Optional[str]:
-        """
-        Save a base64 encoded image to disk.
-        Returns the filename if successful, otherwise None.
-        """
-        try:
-            # Format is usually: data:image/png;base64,iVBORw0KGgo...
-            pattern = re.compile(r'^data:image/(\w+);base64,(.*)$')
-            match = pattern.match(base64_str)
-            if not match:
-                return None
-                
-            ext = f".{match.group(1)}"
-            data_bytes = base64.b64decode(match.group(2))
-            
-            filename = f"inline_{idx}{ext}"
-            save_path = config.LIBRARY_DIR / "images" / article_slug / filename
-            
-            with open(save_path, "wb") as f:
-                f.write(data_bytes)
-                
-            return filename
-        except Exception as e:
-            logger.error(f"Error decoding base64 image: {e}")
-            return None
-
-    def _get_extension_from_mime(self, content_type: str) -> str:
-        """Map mime type to common file extensions."""
-        content_type = content_type.lower()
-        if "image/png" in content_type:
-            return ".png"
-        elif "image/jpeg" in content_type or "image/jpg" in content_type:
-            return ".jpg"
-        elif "image/gif" in content_type:
-            return ".gif"
-        elif "image/webp" in content_type:
-            return ".webp"
-        elif "image/svg+xml" in content_type:
-            return ".svg"
-        return ""
 
 
 class HTMLConverter(BaseConverter):
@@ -967,59 +922,6 @@ class HTMLConverter(BaseConverter):
                         img["src"] = f"data:{mime_type};base64,{b64_str}"
 
         return str(soup)
-
-    async def _download_single_image_bytes(
-        self,
-        client: httpx.AsyncClient,
-        url: str,
-        semaphore: asyncio.Semaphore,
-        referer: Optional[str] = None
-    ) -> Optional[Tuple[bytes, str]]:
-        """
-        Download a single image and return its bytes and content-type.
-        """
-        async with semaphore:
-            try:
-                headers = {
-                    "User-Agent": (
-                        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                        "AppleWebKit/537.36 (KHTML, like Gecko) "
-                        "Chrome/122.0.0.0 Safari/537.36 (ReadItLaterBot/1.0; contact: support@readitlater-app.local)"
-                    ),
-                    "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
-                    "Accept-Language": "en-US,en;q=0.9,ru;q=0.8",
-                }
-                if referer:
-                    headers["Referer"] = referer
-
-                await asyncio.sleep(0.15)
-                retries = 3
-                backoff = 0.5
-                response = None
-
-                for attempt in range(retries):
-                    response = await client.get(url, headers=headers)
-                    if response.status_code == 429:
-                        retry_after = response.headers.get("Retry-After")
-                        try:
-                            delay = float(retry_after) if retry_after else backoff
-                        except ValueError:
-                            delay = backoff
-                        logger.warning(f"Rate limited (429) for image {url}. Retrying in {delay}s...")
-                        await asyncio.sleep(delay)
-                        backoff *= 2
-                        continue
-                    break
-
-                if not response:
-                    raise Exception("No response received from image server")
-
-                response.raise_for_status()
-                content_type = response.headers.get("content-type", "image/jpeg")
-                return response.content, content_type
-            except Exception as e:
-                logger.error(f"Error downloading image bytes {url}: {e}")
-                return None
 
     def _wrap_in_template(self, title: str, body_content: str) -> str:
         """Wrap body content in a styled premium HTML document with Dark/Light theme."""

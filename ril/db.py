@@ -90,11 +90,15 @@ def add_article(
             """, (url, title, added_at, file_path, word_count, char_count))
             article_id = cursor.lastrowid
         
+        # Clean content for FTS: strip base64 image reference blocks to avoid indexing gibberish
+        import re
+        fts_content = re.sub(r'(?m)^\[img_ref_\d+\].*$', '', content)
+        
         # Insert into FTS5
         cursor.execute("""
             INSERT INTO articles_fts (article_id, title, content)
             VALUES (?, ?, ?)
-        """, (article_id, title, content))
+        """, (article_id, title, fts_content))
         
         conn.commit()
         return article_id

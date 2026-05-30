@@ -1,6 +1,7 @@
 import re
 import logging
 import os
+import asyncio
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
 
@@ -30,6 +31,11 @@ async def safe_delete_message(context: ContextTypes.DEFAULT_TYPE, chat_id: int, 
     except Exception:
         pass
 
+async def delayed_delete(context: ContextTypes.DEFAULT_TYPE, chat_id: int, message_id: int, delay_seconds: int = 10):
+    """Wait for some seconds and safely delete the message."""
+    await asyncio.sleep(delay_seconds)
+    await safe_delete_message(context, chat_id, message_id)
+
 def make_progress_bar(pct: float) -> str:
     """Generate a clean visual progress bar."""
     total_blocks = 10
@@ -45,6 +51,10 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception:
         pass
 
+    prev_msg_id = context.user_data.get("last_start_msg_id")
+    if prev_msg_id:
+        await safe_delete_message(context, update.effective_chat.id, prev_msg_id)
+
     welcome_text = (
         "👋 *Привет! Я твой бот Read It Later (RIL).*\n\n"
         "Пришли мне любую ссылку, я очищу её от лишней рекламы, сохраню локально с картинками и отправлю тебе файл статьи.\n\n"
@@ -57,7 +67,11 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🗑️ /delete <ID> — Быстрое удаление по ID\n"
         "⚠️ /reset — Очистить библиотеку"
     )
-    await update.message.reply_text(welcome_text, parse_mode="Markdown")
+    keyboard = InlineKeyboardMarkup([[
+        InlineKeyboardButton("🗑️ Закрыть", callback_data="delete_this_msg")
+    ]])
+    sent_msg = await update.message.reply_text(welcome_text, reply_markup=keyboard, parse_mode="Markdown")
+    context.user_data["last_start_msg_id"] = sent_msg.message_id
 
 @check_user
 async def format_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -67,6 +81,10 @@ async def format_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception:
         pass
         
+    prev_msg_id = context.user_data.get("last_format_msg_id")
+    if prev_msg_id:
+        await safe_delete_message(context, update.effective_chat.id, prev_msg_id)
+
     current_format = context.user_data.get("format", "markdown")
     msg = (
         f"⚙️ *Настройка формата сохранения*\n\n"
@@ -77,9 +95,13 @@ async def format_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [
             InlineKeyboardButton("📄 Markdown", callback_data="set_format:markdown"),
             InlineKeyboardButton("🌐 HTML", callback_data="set_format:html")
+        ],
+        [
+            InlineKeyboardButton("🗑️ Закрыть", callback_data="delete_this_msg")
         ]
     ])
-    await update.message.reply_text(msg, reply_markup=keyboard, parse_mode="Markdown")
+    sent_msg = await update.message.reply_text(msg, reply_markup=keyboard, parse_mode="Markdown")
+    context.user_data["last_format_msg_id"] = sent_msg.message_id
 
 @check_user
 async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -96,8 +118,11 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         stats_data = db.get_stats()
         total = stats_data['total_articles']
+        keyboard = InlineKeyboardMarkup([[
+            InlineKeyboardButton("🗑️ Закрыть", callback_data="delete_this_msg")
+        ]])
         if total == 0:
-            sent_msg = await update.message.reply_text("📭 *Ваша библиотека пока пуста.*", parse_mode="Markdown")
+            sent_msg = await update.message.reply_text("📭 *Ваша библиотека пока пуста.*", reply_markup=keyboard, parse_mode="Markdown")
             context.user_data["last_stats_msg_id"] = sent_msg.message_id
             return
             
@@ -118,7 +143,7 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"⏱️ Осталось читать: *~{unread_mins} мин*\n"
             f"📐 Средний размер: *{stats_data['avg_words_per_article']:.0f} слов*"
         )
-        sent_msg = await update.message.reply_text(msg, parse_mode="Markdown")
+        sent_msg = await update.message.reply_text(msg, reply_markup=keyboard, parse_mode="Markdown")
         context.user_data["last_stats_msg_id"] = sent_msg.message_id
     except Exception as e:
         logger.error(f"Error in stats command: {e}")
@@ -137,9 +162,10 @@ async def show_articles_list(update: Update, context: ContextTypes.DEFAULT_TYPE,
     """Render the list of recent articles with inline buttons."""
     try:
         articles = db.list_articles(limit=10)
+        close_btn = InlineKeyboardButton("🗑️ Закрыть список", callback_data="delete_this_msg")
         if not articles:
             text = "📭 *В вашей библиотеке пока нет статей.*"
-            keyboard = None
+            keyboard = InlineKeyboardMarkup([[close_btn]])
         else:
             msg_lines = ["📋 *Последние сохранённые статьи:*\n"]
             keyboard_buttons = []
@@ -157,6 +183,8 @@ async def show_articles_list(update: Update, context: ContextTypes.DEFAULT_TYPE,
                     row = []
             if row:
                 keyboard_buttons.append(row)
+            
+            keyboard_buttons.append([close_btn])
                 
             text = "\n".join(msg_lines)
             text += "\n💡 _Выберите ID статьи на кнопках ниже для управления или просмотра её деталей._"
@@ -210,6 +238,9 @@ async def show_article_details(update: Update, context: ContextTypes.DEFAULT_TYP
         [
             InlineKeyboardButton("🗑️ Удалить статью", callback_data=f"del_confirm:{article['id']}"),
             InlineKeyboardButton("🔙 Назад к списку", callback_data="list")
+        ],
+        [
+            InlineKeyboardButton("🗑️ Закрыть", callback_data="delete_this_msg")
         ]
     ])
     
@@ -249,7 +280,14 @@ async def search_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.delete()
         except Exception:
             pass
-        await update.message.reply_text("💡 Пожалуйста, укажите поисковый запрос. Пример: `/search квантовые`", parse_mode="Markdown")
+        warning_msg = await update.message.reply_text(
+            "💡 Пожалуйста, укажите поисковый запрос. Пример: `/search квантовые`",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("🗑️ Закрыть", callback_data="delete_this_msg")
+            ]]),
+            parse_mode="Markdown"
+        )
+        asyncio.create_task(delayed_delete(context, update.effective_chat.id, warning_msg.message_id, 10))
         return
         
     query = " ".join(context.args)
@@ -264,8 +302,15 @@ async def search_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     try:
         results = db.search_articles(query, limit=5)
+        keyboard = InlineKeyboardMarkup([[
+            InlineKeyboardButton("🗑️ Закрыть", callback_data="delete_this_msg")
+        ]])
         if not results:
-            sent_msg = await update.message.reply_text(f"🔍 По запросу *'{query}'* ничего не найдено.", parse_mode="Markdown")
+            sent_msg = await update.message.reply_text(
+                f"🔍 По запросу *'{query}'* ничего не найдено.",
+                reply_markup=keyboard,
+                parse_mode="Markdown"
+            )
             context.user_data["last_search_msg_id"] = sent_msg.message_id
             return
             
@@ -279,6 +324,8 @@ async def search_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             keyboard_buttons.append([InlineKeyboardButton(text=f"📖 Открыть ID {r['id']}", callback_data=f"art:{r['id']}")])
             
+        keyboard_buttons.append([InlineKeyboardButton("🗑️ Закрыть результаты", callback_data="delete_this_msg")])
+
         sent_msg = await update.message.reply_text(
             "\n".join(msg_lines), 
             reply_markup=InlineKeyboardMarkup(keyboard_buttons), 
@@ -298,19 +345,38 @@ async def get_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         pass
 
     if not context.args:
-        await update.message.reply_text("💡 Пожалуйста, укажите ID статьи. Пример: `/get 5`", parse_mode="Markdown")
+        warning_msg = await update.message.reply_text(
+            "💡 Пожалуйста, укажите ID статьи. Пример: `/get 5`",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("🗑️ Закрыть", callback_data="delete_this_msg")
+            ]]),
+            parse_mode="Markdown"
+        )
+        asyncio.create_task(delayed_delete(context, update.effective_chat.id, warning_msg.message_id, 10))
         return
         
     try:
         article_id = int(context.args[0])
     except ValueError:
-        await update.message.reply_text("❌ ID статьи должен быть числом. Пример: `/get 5`")
+        warning_msg = await update.message.reply_text(
+            "❌ ID статьи должен быть числом. Пример: `/get 5`",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("🗑️ Закрыть", callback_data="delete_this_msg")
+            ]])
+        )
+        asyncio.create_task(delayed_delete(context, update.effective_chat.id, warning_msg.message_id, 10))
         return
         
     try:
         article = db.get_article(article_id)
         if not article:
-            await update.message.reply_text(f"❌ Статья с ID {article_id} не найдена.")
+            warning_msg = await update.message.reply_text(
+                f"❌ Статья с ID {article_id} не найдена.",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("🗑️ Закрыть", callback_data="delete_this_msg")
+                ]])
+            )
+            asyncio.create_task(delayed_delete(context, update.effective_chat.id, warning_msg.message_id, 10))
             return
             
         file_path = article['file_path']
@@ -339,7 +405,14 @@ async def get_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     parse_mode="Markdown"
                 )
         else:
-            await update.message.reply_text(f"❌ Файл статьи не найден на диске.", parse_mode="Markdown")
+            warning_msg = await update.message.reply_text(
+                f"❌ Файл статьи не найден на диске.",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("🗑️ Закрыть", callback_data="delete_this_msg")
+                ]]),
+                parse_mode="Markdown"
+            )
+            asyncio.create_task(delayed_delete(context, update.effective_chat.id, warning_msg.message_id, 10))
     except Exception as e:
         logger.error(f"Error fetching article {article_id}: {e}")
         await update.message.reply_text(f"❌ Произошла ошибка при получении статьи.")
@@ -353,26 +426,58 @@ async def delete_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         pass
 
     if not context.args:
-        await update.message.reply_text("💡 Пожалуйста, укажите ID статьи. Пример: `/delete 5`", parse_mode="Markdown")
+        warning_msg = await update.message.reply_text(
+            "💡 Пожалуйста, укажите ID статьи. Пример: `/delete 5`",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("🗑️ Закрыть", callback_data="delete_this_msg")
+            ]]),
+            parse_mode="Markdown"
+        )
+        asyncio.create_task(delayed_delete(context, update.effective_chat.id, warning_msg.message_id, 10))
         return
         
     try:
         article_id = int(context.args[0])
     except ValueError:
-        await update.message.reply_text("❌ ID статьи должен быть числом. Пример: `/delete 5`")
+        warning_msg = await update.message.reply_text(
+            "❌ ID статьи должен быть числом. Пример: `/delete 5`",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("🗑️ Закрыть", callback_data="delete_this_msg")
+            ]])
+        )
+        asyncio.create_task(delayed_delete(context, update.effective_chat.id, warning_msg.message_id, 10))
         return
         
     try:
         article = db.get_article(article_id)
         if not article:
-            await update.message.reply_text(f"❌ Статья с ID {article_id} не найдена.")
+            warning_msg = await update.message.reply_text(
+                f"❌ Статья с ID {article_id} не найдена.",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("🗑️ Закрыть", callback_data="delete_this_msg")
+                ]])
+            )
+            asyncio.create_task(delayed_delete(context, update.effective_chat.id, warning_msg.message_id, 10))
             return
             
         success = core.delete_article(article_id)
         if success:
-            await update.message.reply_text(f"🗑️ Статья *\"{article['title']}\"* (ID: {article_id}) успешно удалена.", parse_mode="Markdown")
+            success_msg = await update.message.reply_text(
+                f"🗑️ Статья *\"{article['title']}\"* (ID: {article_id}) успешно удалена.",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("🗑️ Закрыть", callback_data="delete_this_msg")
+                ]]),
+                parse_mode="Markdown"
+            )
+            asyncio.create_task(delayed_delete(context, update.effective_chat.id, success_msg.message_id, 5))
         else:
-            await update.message.reply_text(f"❌ Не удалось удалить статью с ID {article_id}.")
+            warning_msg = await update.message.reply_text(
+                f"❌ Не удалось удалить статью с ID {article_id}.",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("🗑️ Закрыть", callback_data="delete_this_msg")
+                ]])
+            )
+            asyncio.create_task(delayed_delete(context, update.effective_chat.id, warning_msg.message_id, 10))
     except Exception as e:
         logger.error(f"Error deleting article {article_id}: {e}")
         await update.message.reply_text(f"❌ Произошла ошибка при удалении статьи.")
@@ -385,12 +490,20 @@ async def reset_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception:
         pass
 
-    await update.message.reply_text(
+    prev_msg_id = context.user_data.get("last_reset_msg_id")
+    if prev_msg_id:
+        await safe_delete_message(context, update.effective_chat.id, prev_msg_id)
+
+    sent_msg = await update.message.reply_text(
         "⚠️ *ВНИМАНИЕ!* Вы собираетесь удалить ВСЕ статьи и очистить базу данных.\n"
         "Это действие необратимо.\n\n"
         "Для подтверждения отправьте команду: `/reset_confirm`",
+        reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton("🗑️ Отмена", callback_data="delete_this_msg")
+        ]]),
         parse_mode="Markdown"
     )
+    context.user_data["last_reset_msg_id"] = sent_msg.message_id
 
 @check_user
 async def reset_confirm_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -400,12 +513,23 @@ async def reset_confirm_command(update: Update, context: ContextTypes.DEFAULT_TY
     except Exception:
         pass
 
+    prev_reset_msg_id = context.user_data.get("last_reset_msg_id")
+    if prev_reset_msg_id:
+        await safe_delete_message(context, update.effective_chat.id, prev_reset_msg_id)
+        context.user_data["last_reset_msg_id"] = None
+
     try:
         core.reset_library()
-        await update.message.reply_text("✅ Библиотека и база данных успешно очищены!")
+        success_msg = await update.message.reply_text(
+            "✅ Библиотека и база данных успешно очищены!",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("🗑️ Закрыть", callback_data="delete_this_msg")
+            ]])
+        )
+        asyncio.create_task(delayed_delete(context, update.effective_chat.id, success_msg.message_id, 5))
     except Exception as e:
         logger.error(f"Error resetting library: {e}")
-        await update.message.reply_text(f"❌ Ошибка при очистке библиотеки.")
+        await update.message.reply_text("❌ Ошибка при очистке библиотеки.")
 
 @check_user
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -417,7 +541,17 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Simple regex to extract URL(s)
     urls = re.findall(r'(https?://\S+)', text)
     if not urls:
-        await update.message.reply_text("ℹ️ Пришлите мне ссылку, чтобы сохранить статью в архив.")
+        try:
+            await update.message.delete()
+        except Exception:
+            pass
+        warning_msg = await update.message.reply_text(
+            "ℹ️ Пришлите мне ссылку, чтобы сохранить статью в архив.",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("🗑️ Закрыть", callback_data="delete_this_msg")
+            ]])
+        )
+        asyncio.create_task(delayed_delete(context, update.effective_chat.id, warning_msg.message_id, 10))
         return
         
     text_lower = text.lower()
@@ -431,6 +565,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     from ril.converters import MarkdownConverter, HTMLConverter
     converter = HTMLConverter() if fmt == "html" else MarkdownConverter()
         
+    try:
+        await update.message.delete()
+    except Exception:
+        pass
+
     for url in urls:
         status_msg = await update.message.reply_text(f"⏳ Начинаю импорт ({fmt.upper()}): {url}...")
         try:
@@ -477,22 +616,20 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     f"⚠️ Файл не найден на диске, но сохранен в базе:\n{response_text}", 
                     parse_mode="Markdown"
                 )
-            
-            # Delete user's incoming message to keep the chat clean
-            try:
-                await update.message.delete()
-            except Exception:
-                pass
                 
         except Exception as e:
             logger.error(f"Error importing {url}: {e}", exc_info=True)
             # Delete status message
             await safe_delete_message(context, update.effective_chat.id, status_msg.message_id)
-            await update.message.reply_text(
+            error_msg = await update.message.reply_text(
                 f"❌ Ошибка при импорте ссылки: {url}\n"
                 f"Детали: `{str(e)}`",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("🗑️ Закрыть", callback_data="delete_this_msg")
+                ]]),
                 parse_mode="Markdown"
             )
+            asyncio.create_task(delayed_delete(context, update.effective_chat.id, error_msg.message_id, 30))
 
 async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle callback queries from inline buttons."""
@@ -509,6 +646,13 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.answer()
         await show_articles_list(update, context, edit=True)
         
+    elif data == "delete_this_msg":
+        await query.answer()
+        try:
+            await query.message.delete()
+        except Exception:
+            pass
+
     elif data.startswith("art:"):
         await query.answer()
         art_id = int(data.split(":")[1])
@@ -634,6 +778,9 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [
                 InlineKeyboardButton("📄 Markdown", callback_data="set_format:markdown"),
                 InlineKeyboardButton("🌐 HTML", callback_data="set_format:html")
+            ],
+            [
+                InlineKeyboardButton("🗑️ Закрыть", callback_data="delete_this_msg")
             ]
         ])
         try:

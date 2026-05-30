@@ -47,7 +47,7 @@ async def test_telegram_stats_command(mocker, setup_test_environment):
     # 1. Empty DB case
     update, context = create_mock_update(user_id=12345)
     await telegram_bot.stats_command(update, context)
-    update.message.reply_text.assert_called_once_with("📭 *Ваша библиотека пока пуста.*", parse_mode="Markdown")
+    update.message.reply_text.assert_called_once_with("📭 *Ваша библиотека пока пуста.*", reply_markup=mocker.ANY, parse_mode="Markdown")
     
     # 2. Populated DB case
     db.add_article(
@@ -73,7 +73,7 @@ async def test_telegram_list_command(mocker, setup_test_environment):
     # 1. Empty List
     update, context = create_mock_update(user_id=12345)
     await telegram_bot.list_command(update, context)
-    update.message.reply_text.assert_called_once_with("📭 *В вашей библиотеке пока нет статей.*", reply_markup=None, parse_mode="Markdown")
+    update.message.reply_text.assert_called_once_with("📭 *В вашей библиотеке пока нет статей.*", reply_markup=mocker.ANY, parse_mode="Markdown")
     
     # 2. Populated List
     db.add_article("https://url1.com", "First Art", "/path1.md", 50, 200, "Content 1")
@@ -115,7 +115,7 @@ async def test_telegram_handle_message(mocker, setup_test_environment):
     # 1. Text without URLs
     update, context = create_mock_update(user_id=12345, text="Hello bot!")
     await telegram_bot.handle_message(update, context)
-    update.message.reply_text.assert_called_once_with("ℹ️ Пришлите мне ссылку, чтобы сохранить статью в архив.")
+    update.message.reply_text.assert_called_once_with("ℹ️ Пришлите мне ссылку, чтобы сохранить статью в архив.", reply_markup=mocker.ANY)
     
     # 2. Text with URL - Pipeline Success (File doesn't exist)
     mock_process = mocker.patch(
@@ -216,7 +216,7 @@ async def test_telegram_get_command(mocker, setup_test_environment):
     # 2. Get with non-existent ID
     update2, context2 = create_mock_update(user_id=12345, args=["999"])
     await telegram_bot.get_command(update2, context2)
-    update2.message.reply_text.assert_called_once_with("❌ Статья с ID 999 не найдена.")
+    update2.message.reply_text.assert_called_once_with("❌ Статья с ID 999 не найдена.", reply_markup=mocker.ANY)
 
 @pytest.mark.asyncio
 async def test_telegram_delete_command(mocker, setup_test_environment):
