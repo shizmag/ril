@@ -41,3 +41,31 @@ def test_extract_article_fail_fallback():
     title, clean_html = readability_utils.extract_article(None)
     assert title == "Extraction Failed"
     assert clean_html is None
+
+def test_extract_article_title_heuristic():
+    # 1. Split at colon
+    html = "<html><body><h1>Python: A Programming Language</h1><p>Some content with enough words to trigger readability parsing.</p></body></html>"
+    title, _ = readability_utils.extract_article(html)
+    assert title == "Python"
+
+    # 2. Split at pipe
+    html = "<html><body><h1>Welcome to My Blog | Category</h1><p>Some content with enough words to trigger readability parsing.</p></body></html>"
+    title, _ = readability_utils.extract_article(html)
+    assert title == "Welcome to My Blog"
+
+    # 3. Split at dot-space
+    html = "<html><body><h1>Main Title. Subtitle here</h1><p>Some content with enough words to trigger readability parsing.</p></body></html>"
+    title, _ = readability_utils.extract_article(html)
+    assert title == "Main Title"
+
+    # 4. Do not split on dot without space (like version number or abbreviation)
+    html = "<html><body><h1>Version 3.0: Release Notes</h1><p>Some content with enough words to trigger readability parsing.</p></body></html>"
+    title, _ = readability_utils.extract_article(html)
+    assert title == "Version 3.0"
+
+    # 5. Length limit (truncation at word boundary)
+    long_title = "A very long title that goes on and on and contains a lot of text to exceed eighty characters so that it has to be truncated at word boundary"
+    html = f"<html><body><h1>{long_title}</h1><p>Some content with enough words to trigger readability parsing.</p></body></html>"
+    title, _ = readability_utils.extract_article(html)
+    assert len(title) <= 80
+    assert title == "A very long title that goes on and on and contains a lot of text to exceed"

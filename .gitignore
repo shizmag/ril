@@ -28,3 +28,4 @@ ril-daemon/target/
 *.profraw
 *.profdata
 
+src/library/*

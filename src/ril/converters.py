@@ -466,6 +466,10 @@ def preprocess_html(html: str) -> str:
     for selector in consent_selectors:
         for tag in soup.select(selector):
             tag.decompose()
+            
+    # 1.2 Strip page-related span elements that are not parsed correctly by some readers
+    for tag in soup.find_all("span", id=re.compile(r"^page-")):
+        tag.decompose()
         
     # 2. Clean links and remove tracking params
     for a in soup.find_all("a"):

@@ -1,3 +1,0 @@
-## BibTeX formatted citation
-
-×

@@ -512,6 +512,28 @@ async def test_cookie_consent_removal(setup_test_environment):
     assert "Vendor details and preferences" not in result
 
 
+@pytest.mark.asyncio
+async def test_page_span_removal(setup_test_environment):
+    converter = MarkdownConverter()
+    
+    html = (
+        "<html>"
+        "<body>"
+        "  <h1>Real Article Title</h1>"
+        "  <p>Paragraph 1 <span id='page-1'></span> content.</p>"
+        "  <p>Paragraph 2 <span id='page-12'></span> content.</p>"
+        "  <p>Paragraph 3 <span id='not-a-page-span'>preserved span</span> content.</p>"
+        "</body>"
+        "</html>"
+    )
+    
+    result = await converter.convert(html, "https://example.com", "test-page-span-removal")
+    
+    assert "page-1" not in result
+    assert "page-12" not in result
+    assert "preserved span" in result
+
+
 
 
 
