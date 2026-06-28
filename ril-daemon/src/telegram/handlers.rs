@@ -1,5 +1,6 @@
 use crate::domain::SaveFormat;
-use crate::telegram::{BotState, Command};
+use crate::telegram::state::{BotState, PendingState};
+use crate::telegram::{Command, keyboards, views, MapTgError};
 use std::sync::Arc;
 use teloxide::prelude::*;
 use teloxide::types::{InputFile, Message};
@@ -16,7 +17,88 @@ pub async fn handle_message(bot: Bot, msg: Message, state: Arc<BotState>) -> Res
         return Ok(());
     }
 
-    let text = msg.text().unwrap_or("");
+    let text = msg.text().unwrap_or("").trim();
+
+    // Check pending states first (e.g. user is entering comments or tags)
+    let pending = state.get_pending_state(user.id).await;
+    if !matches!(pending, PendingState::None) {
+        if text.eq_ignore_ascii_case("/cancel") {
+            state.clear_pending_state(user.id).await;
+            bot.send_message(msg.chat.id, "Действие отменено.").await?;
+            // Return to hub or article if we had one
+            if let PendingState::WaitingForComment { article_id } | PendingState::WaitingForTag { article_id } = pending {
+                if article_id > 0 {
+                    let content = state.bridge.get_article_content(article_id).await.tg_err()?;
+                    bot.send_message(msg.chat.id, views::render_article_card(&content.article))
+                        .reply_markup(keyboards::article_card_keyboard(article_id, &content.article.status, &content.article.url))
+                        .parse_mode(teloxide::types::ParseMode::Html)
+                        .await?;
+                    return Ok(());
+                }
+            }
+            send_hub(bot, msg.chat.id, state).await?;
+            return Ok(());
+        }
+
+        match pending {
+            PendingState::WaitingForComment { article_id } => {
+                state.bridge.set_article_comment(article_id, Some(text.to_string())).await.tg_err()?;
+                state.clear_pending_state(user.id).await;
+                
+                let content = state.bridge.get_article_content(article_id).await.tg_err()?;
+                let mut text_card = "💬 <b>Комментарий сохранен!</b>\n\n".to_string();
+                text_card.push_str(&views::render_article_card(&content.article));
+                
+                bot.send_message(msg.chat.id, text_card)
+                    .reply_markup(keyboards::article_card_keyboard(article_id, &content.article.status, &content.article.url))
+                    .parse_mode(teloxide::types::ParseMode::Html)
+                    .await?;
+            }
+            PendingState::WaitingForTag { article_id } => {
+                let tags: Vec<String> = text.split(',')
+                    .map(|t| t.trim().to_string())
+                    .filter(|t| !t.is_empty())
+                    .collect();
+                state.bridge.add_tags(article_id, tags).await.tg_err()?;
+                state.clear_pending_state(user.id).await;
+                
+                let content = state.bridge.get_article_content(article_id).await.tg_err()?;
+                let mut text_card = "🏷 <b>Теги обновлены!</b>\n\n".to_string();
+                text_card.push_str(&views::render_article_card(&content.article));
+                
+                bot.send_message(msg.chat.id, text_card)
+                    .reply_markup(keyboards::article_card_keyboard(article_id, &content.article.status, &content.article.url))
+                    .parse_mode(teloxide::types::ParseMode::Html)
+                    .await?;
+            }
+            PendingState::WaitingForSearchQuery => {
+                state.update_search_session(user.id, |s| {
+                    s.query = if text.is_empty() { None } else { Some(text.to_string()) };
+                }).await;
+                state.clear_pending_state(user.id).await;
+                
+                let session = state.get_search_session(user.id).await;
+                bot.send_message(msg.chat.id, "🔎 <b>Поисковый запрос сохранен.</b>")
+                    .reply_markup(keyboards::search_menu_keyboard(&session))
+                    .parse_mode(teloxide::types::ParseMode::Html)
+                    .await?;
+            }
+            PendingState::WaitingForFilterDomain => {
+                state.update_search_session(user.id, |s| {
+                    s.domain = if text.is_empty() { None } else { Some(text.to_string()) };
+                }).await;
+                state.clear_pending_state(user.id).await;
+                
+                let session = state.get_search_session(user.id).await;
+                bot.send_message(msg.chat.id, "🌐 <b>Фильтр по домену обновлен.</b>")
+                    .reply_markup(keyboards::search_menu_keyboard(&session))
+                    .parse_mode(teloxide::types::ParseMode::Html)
+                    .await?;
+            }
+            PendingState::None => {}
+        }
+        return Ok(());
+    }
 
     // Try parsing as command
     if text.starts_with('/') {
@@ -25,7 +107,7 @@ pub async fn handle_message(bot: Bot, msg: Message, state: Arc<BotState>) -> Res
         }
     }
 
-    // Extract URLs if not a command
+    // Extract URLs if not a command and not in pending state
     let urls = super::extract_urls(text);
     if !urls.is_empty() {
         handle_urls(bot, msg, urls, state).await?;
@@ -33,7 +115,7 @@ pub async fn handle_message(bot: Bot, msg: Message, state: Arc<BotState>) -> Res
         let _ = bot
             .send_message(
                 msg.chat.id,
-                "Unknown command. Type /help to see supported commands.",
+                "Неизвестная команда. Введите /help для просмотра списка команд.",
             )
             .await;
     }
@@ -59,23 +141,8 @@ pub async fn handle_command(
     }
 
     match cmd {
-        Command::Start | Command::Help => {
-            let help_text = "📚 <b>Read It Later Bot</b>\n\n\
-            Commands:\n\
-            /start or /help - Show this help message\n\
-            /format [markdown|html|epub] - Show or set default save format\n\
-            /stats - Show library reading statistics\n\
-            /list - List 15 most recent articles\n\
-            /search &lt;query&gt; - Search library using SQLite FTS5\n\
-            /get &lt;id&gt; - Retrieve article as a document\n\
-            /read &lt;id&gt; - Mark article as read\n\
-            /unread &lt;id&gt; - Mark article as unread\n\
-            /delete &lt;id&gt; - Delete article from library\n\
-            /reset - Reset library (deletes everything)\n\n\
-            Simply send me one or more URLs to import them into your library!";
-            bot.send_message(msg.chat.id, help_text)
-                .parse_mode(teloxide::types::ParseMode::Html)
-                .await?;
+        Command::Start | Command::Help | Command::Hub => {
+            send_hub(bot, msg.chat.id, state).await?;
         }
         Command::Format(arg) => {
             let arg = arg.trim();
@@ -86,8 +153,9 @@ pub async fn handle_command(
                 };
                 bot.send_message(
                     msg.chat.id,
-                    format!("Current default save format is: <b>{}</b>", current_fmt),
+                    format!("Текущий формат сохранения по умолчанию: <b>{}</b>", current_fmt),
                 )
+                .reply_markup(keyboards::settings_keyboard(&current_fmt.to_string()))
                 .parse_mode(teloxide::types::ParseMode::Html)
                 .await?;
             } else {
@@ -99,141 +167,61 @@ pub async fn handle_command(
                         }
                         bot.send_message(
                             msg.chat.id,
-                            format!("Default format successfully changed to <b>{}</b>", fmt),
+                            format!("Формат по умолчанию успешно изменен на <b>{}</b>", fmt),
                         )
+                        .reply_markup(keyboards::settings_keyboard(&fmt.to_string()))
                         .parse_mode(teloxide::types::ParseMode::Html)
                         .await?;
                     }
                     Err(_) => {
-                        bot.send_message(msg.chat.id, "Invalid format. Supported formats: <b>markdown</b>, <b>html</b>, <b>epub</b>")
+                        bot.send_message(msg.chat.id, "Недопустимый формат. Поддерживаемые форматы: <b>markdown</b>, <b>html</b>, <b>epub</b>")
                             .parse_mode(teloxide::types::ParseMode::Html)
                             .await?;
                     }
                 }
             }
         }
-        Command::Stats => match state.bridge.get_reading_stats().await {
-            Ok(stats) => {
-                let progress = if stats.total_articles > 0 {
-                    (stats.read_articles as f64 / stats.total_articles as f64) * 100.0
-                } else {
-                    0.0
-                };
-                let stats_text = format!(
-                    "📊 <b>Reading Statistics</b>\n\n\
-                        Total articles: <b>{}</b>\n\
-                        Unread: <b>{}</b>\n\
-                        Read: <b>{}</b> ({:.1}% completed)\n\n\
-                        Total words: <b>{}</b>\n\
-                        Words read: <b>{}</b>\n\
-                        Words unread: <b>{}</b>\n\
-                        Average words/article: <b>{:.0}</b>",
-                    stats.total_articles,
-                    stats.unread_articles,
-                    stats.read_articles,
-                    progress,
-                    stats.total_words,
-                    stats.read_words,
-                    stats.unread_words,
-                    stats.avg_words_per_article
-                );
-                bot.send_message(msg.chat.id, stats_text)
-                    .parse_mode(teloxide::types::ParseMode::Html)
-                    .await?;
-            }
-            Err(e) => {
-                bot.send_message(msg.chat.id, format!("Error fetching stats: {}", e))
-                    .await?;
-            }
-        },
-        Command::List => match state.bridge.list_articles(None, Some(15)).await {
-            Ok(articles) => {
-                if articles.is_empty() {
-                    bot.send_message(
-                        msg.chat.id,
-                        "Your library is empty. Send me some links to start!",
-                    )
-                    .await?;
-                } else {
-                    let mut list_text = "📚 <b>Recent Articles:</b>\n\n".to_string();
-                    for a in articles {
-                        let status_emoji = if a.status == "read" { "✅" } else { "📖" };
-                        let title_escaped = a
-                            .title
-                            .replace('&', "&amp;")
-                            .replace('<', "&lt;")
-                            .replace('>', "&gt;");
-                        list_text.push_str(&format!(
-                            "{} <b>[{}]</b> {}\n<i>Words: {} | Added: {}</i>\n\n",
-                            status_emoji,
-                            a.id,
-                            title_escaped,
-                            a.word_count,
-                            a.added_at.chars().take(10).collect::<String>()
-                        ));
-                    }
-                    bot.send_message(msg.chat.id, list_text)
-                        .parse_mode(teloxide::types::ParseMode::Html)
-                        .await?;
-                }
-            }
-            Err(e) => {
-                bot.send_message(msg.chat.id, format!("Error fetching list: {}", e))
-                    .await?;
-            }
-        },
+        Command::Stats => {
+            let stats = state.bridge.get_extended_stats().await.tg_err()?;
+            bot.send_message(msg.chat.id, views::render_stats_overview(&stats))
+                .reply_markup(keyboards::stats_menu_keyboard())
+                .parse_mode(teloxide::types::ParseMode::Html)
+                .await?;
+        }
+        Command::List => {
+            let limit = 8;
+            let paginated = state.bridge.search_articles_advanced(None, None, None, None, None, false, false, None, limit, 0).await.tg_err()?;
+            let total_pages = (paginated.total_count as f64 / limit as f64).ceil() as i64;
+            let next_cb = if total_pages > 1 { Some("list:all:1".to_string()) } else { None };
+            
+            bot.send_message(msg.chat.id, views::render_articles_list(&paginated.articles, "Все материалы библиотеки", 0, total_pages))
+                .reply_markup(keyboards::pagination_keyboard(None, next_cb, "hub"))
+                .parse_mode(teloxide::types::ParseMode::Html)
+                .await?;
+        }
         Command::Search(query) => {
             let query = query.trim();
             if query.is_empty() {
-                bot.send_message(
-                    msg.chat.id,
-                    "Please specify search terms: /search &lt;query&gt;",
-                )
-                .parse_mode(teloxide::types::ParseMode::Html)
-                .await?;
-                return Ok(());
-            }
-            match state.bridge.search_articles(query).await {
-                Ok(results) => {
-                    if results.is_empty() {
-                        bot.send_message(msg.chat.id, format!("No matches found for '{}'", query))
-                            .await?;
-                    } else {
-                        let mut search_text =
-                            format!("🔎 <b>Search matches for '{}':</b>\n\n", query);
-                        for r in results {
-                            let status_emoji = if r.status == "read" { "✅" } else { "📖" };
-                            let title_escaped = r
-                                .title
-                                .replace('&', "&amp;")
-                                .replace('<', "&lt;")
-                                .replace('>', "&gt;");
-                            let snippet_escaped = r
-                                .snippet
-                                .replace('&', "&amp;")
-                                .replace('<', "&lt;")
-                                .replace('>', "&gt;");
-
-                            let mut snip = snippet_escaped;
-                            while snip.contains("***") {
-                                snip = snip.replacen("***", "<b>", 1);
-                                snip = snip.replacen("***", "</b>", 1);
-                            }
-
-                            search_text.push_str(&format!(
-                                "{} <b>[{}]</b> {}\n<i>... {} ...</i>\n\n",
-                                status_emoji, r.id, title_escaped, snip
-                            ));
-                        }
-                        bot.send_message(msg.chat.id, search_text)
-                            .parse_mode(teloxide::types::ParseMode::Html)
-                            .await?;
-                    }
-                }
-                Err(e) => {
-                    bot.send_message(msg.chat.id, format!("Error during search: {}", e))
-                        .await?;
-                }
+                let session = state.get_search_session(user.id).await;
+                bot.send_message(msg.chat.id, "🔎 <b>Поиск материалов:</b>")
+                    .reply_markup(keyboards::search_menu_keyboard(&session))
+                    .parse_mode(teloxide::types::ParseMode::Html)
+                    .await?;
+            } else {
+                let limit = 6;
+                let paginated = state.bridge.search_articles_advanced(Some(query.to_string()), None, None, None, None, false, false, None, limit, 0).await.tg_err()?;
+                let total_pages = (paginated.total_count as f64 / limit as f64).ceil() as i64;
+                
+                // Save query to search session for user
+                state.update_search_session(user.id, |s| {
+                    s.query = Some(query.to_string());
+                }).await;
+                
+                let next_cb = if total_pages > 1 { Some("sf_run:1".to_string()) } else { None };
+                bot.send_message(msg.chat.id, views::render_articles_list(&paginated.articles, &format!("Результаты поиска по \"{}\"", query), 0, total_pages))
+                    .reply_markup(keyboards::pagination_keyboard(None, next_cb, "search"))
+                    .parse_mode(teloxide::types::ParseMode::Html)
+                    .await?;
             }
         }
         Command::Get(id) => {
@@ -242,14 +230,14 @@ pub async fn handle_command(
                 Err(_) => {
                     bot.send_message(
                         msg.chat.id,
-                        "Please specify a valid article ID: /get &lt;id&gt;",
+                        "Пожалуйста, укажите числовой ID: /get &lt;id&gt;",
                     )
                     .parse_mode(teloxide::types::ParseMode::Html)
                     .await?;
                     return Ok(());
                 }
             };
-            match state.bridge.get_article_content(id).await {
+            match state.bridge.get_article_content(id).await.tg_err() {
                 Ok(res) => {
                     let file_path = std::path::Path::new(&res.article.file_path);
                     if file_path.exists() {
@@ -261,19 +249,19 @@ pub async fn handle_command(
                         let mut text = res.content;
                         if text.len() > 4000 {
                             text.truncate(4000);
-                            text.push_str("\n\n[Content truncated due to Telegram size limit]");
+                            text.push_str("\n\n[Содержимое урезано из-за лимита Telegram]");
                         }
                         bot.send_message(msg.chat.id, text).await?;
                     } else {
                         bot.send_message(
                             msg.chat.id,
-                            "Saved file not found and contents are empty.",
+                            "Файл не найден, а текст пуст.",
                         )
                         .await?;
                     }
                 }
                 Err(e) => {
-                    bot.send_message(msg.chat.id, format!("Error retrieving article: {}", e))
+                    bot.send_message(msg.chat.id, format!("Ошибка при получении статьи: {}", e))
                         .await?;
                 }
             }
@@ -284,24 +272,24 @@ pub async fn handle_command(
                 Err(_) => {
                     bot.send_message(
                         msg.chat.id,
-                        "Please specify a valid article ID: /read &lt;id&gt;",
+                        "Пожалуйста, укажите числовой ID: /read &lt;id&gt;",
                     )
                     .parse_mode(teloxide::types::ParseMode::Html)
                     .await?;
                     return Ok(());
                 }
             };
-            match state.bridge.mark_article_read(id).await {
+            match state.bridge.mark_article_read(id).await.tg_err() {
                 Ok(true) => {
-                    bot.send_message(msg.chat.id, format!("Article {} marked as read.", id))
+                    bot.send_message(msg.chat.id, format!("Материал {} отмечен как прочитанный.", id))
                         .await?;
                 }
                 Ok(false) => {
-                    bot.send_message(msg.chat.id, format!("Article {} not found.", id))
+                    bot.send_message(msg.chat.id, format!("Материал {} не найден.", id))
                         .await?;
                 }
                 Err(e) => {
-                    bot.send_message(msg.chat.id, format!("Error marking article read: {}", e))
+                    bot.send_message(msg.chat.id, format!("Ошибка: {}", e))
                         .await?;
                 }
             }
@@ -312,24 +300,24 @@ pub async fn handle_command(
                 Err(_) => {
                     bot.send_message(
                         msg.chat.id,
-                        "Please specify a valid article ID: /unread &lt;id&gt;",
+                        "Пожалуйста, укажите числовой ID: /unread &lt;id&gt;",
                     )
                     .parse_mode(teloxide::types::ParseMode::Html)
                     .await?;
                     return Ok(());
                 }
             };
-            match state.bridge.mark_article_unread(id).await {
+            match state.bridge.mark_article_unread(id).await.tg_err() {
                 Ok(true) => {
-                    bot.send_message(msg.chat.id, format!("Article {} marked as unread.", id))
+                    bot.send_message(msg.chat.id, format!("Материал {} отмечен как непрочитанный.", id))
                         .await?;
                 }
                 Ok(false) => {
-                    bot.send_message(msg.chat.id, format!("Article {} not found.", id))
+                    bot.send_message(msg.chat.id, format!("Материал {} не найден.", id))
                         .await?;
                 }
                 Err(e) => {
-                    bot.send_message(msg.chat.id, format!("Error marking article unread: {}", e))
+                    bot.send_message(msg.chat.id, format!("Ошибка: {}", e))
                         .await?;
                 }
             }
@@ -340,24 +328,24 @@ pub async fn handle_command(
                 Err(_) => {
                     bot.send_message(
                         msg.chat.id,
-                        "Please specify a valid article ID: /delete &lt;id&gt;",
+                        "Пожалуйста, укажите числовой ID: /delete &lt;id&gt;",
                     )
                     .parse_mode(teloxide::types::ParseMode::Html)
                     .await?;
                     return Ok(());
                 }
             };
-            match state.bridge.delete_article(id).await {
+            match state.bridge.delete_article(id).await.tg_err() {
                 Ok(true) => {
-                    bot.send_message(msg.chat.id, format!("Article {} successfully deleted.", id))
+                    bot.send_message(msg.chat.id, format!("Материал {} успешно удален.", id))
                         .await?;
                 }
                 Ok(false) => {
-                    bot.send_message(msg.chat.id, format!("Article {} not found.", id))
+                    bot.send_message(msg.chat.id, format!("Материал {} не найден.", id))
                         .await?;
                 }
                 Err(e) => {
-                    bot.send_message(msg.chat.id, format!("Error deleting article: {}", e))
+                    bot.send_message(msg.chat.id, format!("Ошибка: {}", e))
                         .await?;
                 }
             }
@@ -369,8 +357,8 @@ pub async fn handle_command(
             }
             bot.send_message(
                 msg.chat.id,
-                "⚠️ <b>WARNING:</b> This will delete ALL saved articles, files, and database records.\n\n\
-                Are you sure? Send /confirmreset to proceed, or /cancel to abort."
+                "⚠️ <b>ВНИМАНИЕ:</b> Все файлы, материалы и базы данных будут удалены.\n\n\
+                Подтвердите сброс командой /confirmreset или отмените с помощью /cancel."
             )
             .parse_mode(teloxide::types::ParseMode::Html)
             .await?;
@@ -381,26 +369,49 @@ pub async fn handle_command(
                 pending.remove(&user.id)
             };
             if is_pending {
-                match state.bridge.reset_library().await {
+                match state.bridge.reset_library().await.tg_err() {
                     Ok(_) => {
-                        bot.send_message(msg.chat.id, "Library and database successfully cleared.")
+                        bot.send_message(msg.chat.id, "Библиотека успешно очищена.")
                             .await?;
                     }
                     Err(e) => {
-                        bot.send_message(msg.chat.id, format!("Error resetting library: {}", e))
+                        bot.send_message(msg.chat.id, format!("Ошибка при сбросе: {}", e))
                             .await?;
                     }
                 }
             } else {
-                bot.send_message(msg.chat.id, "No pending reset action. Send /reset first.")
+                bot.send_message(msg.chat.id, "Нет активного запроса на сброс. Введите /reset.")
                     .await?;
             }
         }
         Command::Cancel => {
-            bot.send_message(msg.chat.id, "Action cancelled.").await?;
+            bot.send_message(msg.chat.id, "Действие отменено.").await?;
         }
     }
 
+    Ok(())
+}
+
+async fn send_hub(bot: Bot, chat_id: ChatId, state: Arc<BotState>) -> ResponseResult<()> {
+    let stats = state.bridge.get_reading_stats().await.tg_err()?;
+    let progress = if stats.total_articles > 0 {
+        (stats.read_articles as f64 / stats.total_articles as f64) * 100.0
+    } else {
+        0.0
+    };
+    
+    let welcome = format!(
+        "📚 <b>Read It Later Bot</b> — ваш удобный хаб для материалов!\n\n\
+         Всего материалов: <b>{}</b>\n\
+         Прочитано: <b>{}</b> (прогресс {:.1}%)\n\
+         Не прочитано: <b>{}</b>\n\n\
+         Отправьте мне ссылку, чтобы сохранить её, или воспользуйтесь кнопками меню:",
+        stats.total_articles, stats.read_articles, progress, stats.unread_articles
+    );
+    bot.send_message(chat_id, welcome)
+        .reply_markup(keyboards::hub_keyboard())
+        .parse_mode(teloxide::types::ParseMode::Html)
+        .await?;
     Ok(())
 }
 
@@ -422,88 +433,87 @@ pub async fn handle_urls(
     let text = msg.text().unwrap_or("");
     let import_format = super::detect_format_override(text, default_fmt);
 
-    let bot_clone = bot.clone();
     let chat_id = msg.chat.id;
+    
+    // Send a single compact message for importing
+    let status_msg = bot
+        .send_message(
+            chat_id,
+            format!("⏳ <b>Импорт {} ссылок...</b>", urls.len()),
+        )
+        .parse_mode(teloxide::types::ParseMode::Html)
+        .await?;
+
     let bridge = state.bridge.clone();
     let sem = Arc::new(tokio::sync::Semaphore::new(2));
 
     let mut join_handles = vec![];
-    let _ = bot
-        .send_message(
-            chat_id,
-            format!("Starting import of {} link(s)...", urls.len()),
-        )
-        .await;
 
     for url in urls {
         let sem = sem.clone();
         let bridge = bridge.clone();
-        let bot = bot_clone.clone();
-
+        
         let handle = tokio::spawn(async move {
             let _permit = sem.acquire().await.unwrap();
-            let _ = bot
-                .send_message(chat_id, format!("Processing URL: {} ...", url))
-                .await;
-            match bridge.process_url(&url, import_format).await {
-                Ok(res) => {
-                    let title_escaped = res
-                        .title
-                        .replace('&', "&amp;")
-                        .replace('<', "&lt;")
-                        .replace('>', "&gt;");
-                    let file_path = std::path::Path::new(&res.file_path);
-                    if file_path.exists() {
-                        let doc = InputFile::file(file_path);
-                        let caption = format!(
-                            "✅ <b>Successfully Imported!</b>\n\n\
-                            <b>Title:</b> {}\n\
-                            <b>Words:</b> {}\n\
-                            <b>ID:</b> <code>{}</code>",
-                            title_escaped, res.word_count, res.id
-                        );
-                        let _ = bot
-                            .send_document(chat_id, doc)
-                            .caption(caption)
-                            .parse_mode(teloxide::types::ParseMode::Html)
-                            .await;
-                    } else {
-                        let text = format!(
-                            "✅ <b>Successfully Imported!</b>\n\n\
-                            <b>Title:</b> {}\n\
-                            <b>Words:</b> {}\n\
-                            <b>Saved path:</b> {}\n\
-                            <b>ID:</b> <code>{}</code>\n\n\
-                            ⚠️ <i>Note: Document file not found on disk.</i>",
-                            title_escaped, res.word_count, res.file_path, res.id
-                        );
-                        let _ = bot
-                            .send_message(chat_id, text)
-                            .parse_mode(teloxide::types::ParseMode::Html)
-                            .await;
-                    }
-                }
-                Err(e) => {
-                    let _ = bot
-                        .send_message(
-                            chat_id,
-                            format!(
-                                "❌ <b>Failed to import</b> <code>{}</code>\nError: {}",
-                                url, e
-                            ),
-                        )
-                        .parse_mode(teloxide::types::ParseMode::Html)
-                        .await;
-                }
-            }
+            bridge.process_url(&url, import_format).await
         });
         join_handles.push(handle);
     }
 
+    let mut imported = vec![];
+    let mut errors = vec![];
+
     for h in join_handles {
-        let _ = h.await;
+        match h.await {
+            Ok(Ok(res)) => imported.push(res),
+            Ok(Err(e)) => errors.push(e.to_string()),
+            Err(e) => errors.push(format!("Join error: {}", e)),
+        }
     }
 
-    let _ = bot.send_message(chat_id, "Import session finished.").await;
+    if !imported.is_empty() {
+        // Show card of the last successfully imported article
+        let last_res = &imported[imported.len() - 1];
+        
+        let mut final_text = format!(
+            "✅ <b>Материал добавлен!</b>\n\n\
+             <b>Название:</b> {}\n\
+             <b>Источник:</b> {}\n\
+             <b>Слов:</b> {}\n\
+             <b>ID:</b> <code>{}</code>\n\n\
+             Что сделать дальше?",
+            views::escape_html(&last_res.title),
+            views::escape_html(&views::format_domain(&last_res.url)),
+            last_res.word_count,
+            last_res.id
+        );
+        
+        if imported.len() > 1 {
+            final_text.insert_str(0, &format!("📥 Успешно импортировано {} материалов.\n\n", imported.len()));
+        }
+        if !errors.is_empty() {
+            final_text.push_str(&format!("\n\n⚠️ Ошибок при импорте: {}", errors.len()));
+        }
+
+        let markup = keyboards::article_card_keyboard(last_res.id, "unread", &last_res.url);
+
+        // Edit the status message into the final article card
+        let _ = bot.edit_message_text(chat_id, status_msg.id, final_text)
+            .reply_markup(markup)
+            .parse_mode(teloxide::types::ParseMode::Html)
+            .await;
+    } else {
+        // If all imports failed
+        let mut error_text = "❌ <b>Не удалось импортировать материалы</b>\n\n".to_string();
+        for (i, err) in errors.iter().enumerate() {
+            error_text.push_str(&format!("{}. {}\n", i + 1, views::escape_html(&err.to_string())));
+        }
+        
+        let _ = bot.edit_message_text(chat_id, status_msg.id, error_text)
+            .reply_markup(keyboards::back_to_hub_keyboard())
+            .parse_mode(teloxide::types::ParseMode::Html)
+            .await;
+    }
+
     Ok(())
 }

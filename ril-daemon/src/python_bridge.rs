@@ -56,6 +56,10 @@ impl MockState {
             file_path: "/mock/library/1.md".to_string(),
             word_count: 500,
             char_count: 3000,
+            rating: None,
+            comment: None,
+            tags: vec![],
+            snippet: None,
         });
         s.recalc_stats();
         s
@@ -305,6 +309,10 @@ impl PythonBridge {
                     file_path: file_path.clone(),
                     word_count: 100 * id,
                     char_count: 600 * id,
+                    rating: None,
+                    comment: None,
+                    tags: vec![],
+                    snippet: None,
                 };
                 state.articles.push(summary);
                 state.recalc_stats();
@@ -315,7 +323,11 @@ impl PythonBridge {
                     "file_path": file_path,
                     "word_count": 100 * id,
                     "char_count": 600 * id,
-                    "status": "unread"
+                    "status": "unread",
+                    "rating": serde_json::Value::Null,
+                    "comment": serde_json::Value::Null,
+                    "tags": Vec::<String>::new(),
+                    "snippet": serde_json::Value::Null
                 })
             }
             "search_articles" => {
@@ -413,6 +425,187 @@ impl PythonBridge {
                 state.articles.clear();
                 state.recalc_stats();
                 serde_json::json!({ "success": true })
+            }
+            "search_articles_advanced" => {
+                let status = args.get("status").and_then(|v| v.as_str());
+                let tag = args.get("tag").and_then(|v| v.as_str());
+                let limit = args.get("limit").and_then(|v| v.as_i64()).unwrap_or(10) as usize;
+                let offset = args.get("offset").and_then(|v| v.as_i64()).unwrap_or(0) as usize;
+                let rating = args.get("rating").and_then(|v| v.as_i64()).map(|r| r as i32);
+                let query = args.get("query").and_then(|v| v.as_str()).map(|q| q.to_lowercase());
+
+                let mut matched = vec![];
+                for art in &state.articles {
+                    if let Some(ref st) = status {
+                        if art.status != *st { continue; }
+                    }
+                    if let Some(ref tg) = tag {
+                        if !art.tags.contains(&tg.to_string()) { continue; }
+                    }
+                    if let Some(rt) = rating {
+                        if art.rating != Some(rt) { continue; }
+                    }
+                    if let Some(ref q) = query {
+                        if !art.title.to_lowercase().contains(q) && !art.url.to_lowercase().contains(q) {
+                            continue;
+                        }
+                    }
+                    matched.push(art.clone());
+                }
+                let total_count = matched.len() as i64;
+                let mut paged = matched;
+                if offset < paged.len() {
+                    paged = paged.split_off(offset);
+                } else {
+                    paged.clear();
+                }
+                paged.truncate(limit);
+
+                serde_json::json!({
+                    "articles": paged,
+                    "total_count": total_count
+                })
+            }
+            "add_tags" => {
+                let id = args.get("article_id").and_then(|v| v.as_i64()).unwrap_or(0);
+                let tags_val = args.get("tags").and_then(|v| v.as_array());
+                let mut success = false;
+                if let Some(arr) = tags_val {
+                    for art in &mut state.articles {
+                        if art.id == id {
+                            for item in arr {
+                                if let Some(tag_str) = item.as_str() {
+                                    if !art.tags.contains(&tag_str.to_string()) {
+                                        art.tags.push(tag_str.to_string());
+                                    }
+                                }
+                            }
+                            success = true;
+                            break;
+                        }
+                    }
+                }
+                serde_json::json!({ "success": success })
+            }
+            "remove_tag" => {
+                let id = args.get("article_id").and_then(|v| v.as_i64()).unwrap_or(0);
+                let tag = args.get("tag").and_then(|v| v.as_str()).unwrap_or("");
+                let mut success = false;
+                for art in &mut state.articles {
+                    if art.id == id {
+                        art.tags.retain(|t| t != tag);
+                        success = true;
+                        break;
+                    }
+                }
+                serde_json::json!({ "success": success })
+            }
+            "list_tags" | "get_tags_stats" => {
+                let mut counts = std::collections::HashMap::new();
+                for art in &state.articles {
+                    for tag in &art.tags {
+                        *counts.entry(tag.clone()).or_insert(0) += 1;
+                    }
+                }
+                let mut list: Vec<serde_json::Value> = counts.into_iter().map(|(tag, count)| {
+                    serde_json::json!({ "tag": tag, "count": count })
+                }).collect();
+                list.sort_by(|a, b| b["count"].as_i64().cmp(&a["count"].as_i64()));
+                serde_json::Value::Array(list)
+            }
+            "rate_article" => {
+                let id = args.get("article_id").and_then(|v| v.as_i64()).unwrap_or(0);
+                let rating = args.get("rating").and_then(|v| v.as_i64()).map(|r| r as i32);
+                let mut success = false;
+                for art in &mut state.articles {
+                    if art.id == id {
+                        art.rating = rating;
+                        success = true;
+                        break;
+                    }
+                }
+                serde_json::json!({ "success": success })
+            }
+            "set_article_comment" => {
+                let id = args.get("article_id").and_then(|v| v.as_i64()).unwrap_or(0);
+                let comment = args.get("comment").and_then(|v| v.as_str()).map(|s| s.to_string());
+                let mut success = false;
+                for art in &mut state.articles {
+                    if art.id == id {
+                        art.comment = comment.clone();
+                        success = true;
+                        break;
+                    }
+                }
+                serde_json::json!({ "success": success })
+            }
+            "get_extended_stats" => {
+                let mut base = serde_json::to_value(&state.stats).unwrap();
+                let no_tags_count = state.articles.iter().filter(|a| a.tags.is_empty()).count() as i64;
+                let no_rating_count = state.articles.iter().filter(|a| a.rating.is_none()).count() as i64;
+                let rated: Vec<_> = state.articles.iter().filter_map(|a| a.rating).collect();
+                let avg_rating = if rated.is_empty() {
+                    0.0
+                } else {
+                    rated.iter().sum::<i32>() as f64 / rated.len() as f64
+                };
+                let mut top_articles = state.articles.clone();
+                top_articles.sort_by(|a, b| b.rating.cmp(&a.rating));
+                top_articles.truncate(5);
+
+                if let Some(obj) = base.as_object_mut() {
+                    obj.insert("no_tags_count".to_string(), serde_json::json!(no_tags_count));
+                    obj.insert("no_rating_count".to_string(), serde_json::json!(no_rating_count));
+                    obj.insert("avg_rating".to_string(), serde_json::json!(avg_rating));
+                    obj.insert("top_articles".to_string(), serde_json::json!(top_articles));
+                }
+                base
+            }
+            "get_sources_stats" => {
+                let mut domains = std::collections::HashMap::new();
+                for art in &state.articles {
+                    let host = if let Some(stripped) = art.url.strip_prefix("https://") {
+                        Some(stripped)
+                    } else if let Some(stripped) = art.url.strip_prefix("http://") {
+                        Some(stripped)
+                    } else {
+                        None
+                    }.map(|s| {
+                        let part = s.split('/').next().unwrap_or(s);
+                        if part.starts_with("www.") {
+                            part[4..].to_string()
+                        } else {
+                            part.to_string()
+                        }
+                    });
+                    if let Some(h) = host {
+                        *domains.entry(h).or_insert(0) += 1;
+                    }
+                }
+                let mut list: Vec<serde_json::Value> = domains.into_iter().map(|(domain, count)| {
+                    serde_json::json!({ "domain": domain, "count": count })
+                }).collect();
+                list.sort_by(|a, b| b["count"].as_i64().cmp(&a["count"].as_i64()));
+                serde_json::Value::Array(list)
+            }
+            "get_ratings_stats" => {
+                let mut counts = std::collections::HashMap::new();
+                for art in &state.articles {
+                    if let Some(r) = art.rating {
+                        *counts.entry(r.to_string()).or_insert(0) += 1;
+                    }
+                }
+                for i in 1..=5 {
+                    counts.entry(i.to_string()).or_insert(0);
+                }
+                serde_json::to_value(counts).unwrap()
+            }
+            "get_dynamics_stats" => {
+                serde_json::json!({
+                    "today": state.articles.len() as i64,
+                    "week": state.articles.len() as i64,
+                    "month": state.articles.len() as i64
+                })
             }
             _ => {
                 return Err(DaemonError::BridgePython {
@@ -529,5 +722,143 @@ impl PythonBridge {
         }
         let res: Resp = self.call("reset_library", Args {}).await?;
         Ok(res.success)
+    }
+
+    pub async fn search_articles_advanced(
+        &self,
+        query: Option<String>,
+        status: Option<String>,
+        tag: Option<String>,
+        rating: Option<i32>,
+        domain: Option<String>,
+        no_tags: bool,
+        no_rating: bool,
+        date_added: Option<String>,
+        limit: i64,
+        offset: i64,
+    ) -> Result<crate::domain::PaginatedArticles> {
+        #[derive(Serialize)]
+        struct Args {
+            query: Option<String>,
+            status: Option<String>,
+            tag: Option<String>,
+            rating: Option<i32>,
+            domain: Option<String>,
+            no_tags: bool,
+            no_rating: bool,
+            date_added: Option<String>,
+            limit: i64,
+            offset: i64,
+        }
+        self.call(
+            "search_articles_advanced",
+            Args {
+                query,
+                status,
+                tag,
+                rating,
+                domain,
+                no_tags,
+                no_rating,
+                date_added,
+                limit,
+                offset,
+            },
+        )
+        .await
+    }
+
+    pub async fn add_tags(&self, article_id: i64, tags: Vec<String>) -> Result<bool> {
+        #[derive(Serialize)]
+        struct Args {
+            article_id: i64,
+            tags: Vec<String>,
+        }
+        #[derive(Deserialize)]
+        struct Resp {
+            success: bool,
+        }
+        let res: Resp = self.call("add_tags", Args { article_id, tags }).await?;
+        Ok(res.success)
+    }
+
+    pub async fn remove_tag(&self, article_id: i64, tag: &str) -> Result<bool> {
+        #[derive(Serialize)]
+        struct Args<'a> {
+            article_id: i64,
+            tag: &'a str,
+        }
+        #[derive(Deserialize)]
+        struct Resp {
+            success: bool,
+        }
+        let res: Resp = self.call("remove_tag", Args { article_id, tag }).await?;
+        Ok(res.success)
+    }
+
+    pub async fn list_tags(&self) -> Result<Vec<crate::domain::TagStat>> {
+        #[derive(Serialize)]
+        struct Args {}
+        self.call("list_tags", Args {}).await
+    }
+
+    pub async fn rate_article(&self, article_id: i64, rating: Option<i32>) -> Result<bool> {
+        #[derive(Serialize)]
+        struct Args {
+            article_id: i64,
+            rating: Option<i32>,
+        }
+        #[derive(Deserialize)]
+        struct Resp {
+            success: bool,
+        }
+        let res: Resp = self.call("rate_article", Args { article_id, rating }).await?;
+        Ok(res.success)
+    }
+
+    pub async fn set_article_comment(&self, article_id: i64, comment: Option<String>) -> Result<bool> {
+        #[derive(Serialize)]
+        struct Args {
+            article_id: i64,
+            comment: Option<String>,
+        }
+        #[derive(Deserialize)]
+        struct Resp {
+            success: bool,
+        }
+        let res: Resp = self.call("set_article_comment", Args { article_id, comment }).await?;
+        Ok(res.success)
+    }
+
+    pub async fn get_extended_stats(&self) -> Result<crate::domain::ExtendedReadingStats> {
+        #[derive(Serialize)]
+        struct Args {}
+        self.call("get_extended_stats", Args {}).await
+    }
+
+    pub async fn get_sources_stats(&self, limit: i64) -> Result<Vec<crate::domain::SourceStat>> {
+        #[derive(Serialize)]
+        struct Args {
+            limit: i64,
+        }
+        self.call("get_sources_stats", Args { limit }).await
+    }
+
+    pub async fn get_tags_stats(&self) -> Result<Vec<crate::domain::TagStat>> {
+        #[derive(Serialize)]
+        struct Args {}
+        self.call("get_tags_stats", Args {}).await
+    }
+
+    pub async fn get_ratings_stats(&self) -> Result<std::collections::HashMap<String, i64>> {
+        #[derive(Serialize)]
+        struct Args {}
+        self.call("get_ratings_stats", Args {}).await
+    }
+
+    pub async fn get_dynamics_stats(&self) -> Result<crate::domain::DynamicsStats> {
+        #[derive(Serialize)]
+        struct Args {}
+        self.call("get_dynamics_stats", Args {}).await
     }
 }

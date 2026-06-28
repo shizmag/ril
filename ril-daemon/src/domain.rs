@@ -48,6 +48,51 @@ pub struct ArticleSummary {
     pub file_path: String,
     pub word_count: i64,
     pub char_count: i64,
+    pub rating: Option<i32>,
+    pub comment: Option<String>,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    pub snippet: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PaginatedArticles {
+    pub articles: Vec<ArticleSummary>,
+    pub total_count: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SourceStat {
+    pub domain: String,
+    pub count: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TagStat {
+    pub tag: String,
+    pub count: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DynamicsStats {
+    pub today: i64,
+    pub week: i64,
+    pub month: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExtendedReadingStats {
+    pub total_articles: i64,
+    pub read_articles: i64,
+    pub unread_articles: i64,
+    pub total_words: i64,
+    pub read_words: i64,
+    pub unread_words: i64,
+    pub avg_words_per_article: f64,
+    pub no_tags_count: i64,
+    pub no_rating_count: i64,
+    pub avg_rating: f64,
+    pub top_articles: Vec<ArticleSummary>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

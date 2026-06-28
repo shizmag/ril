@@ -1,13 +1,18 @@
 pub mod handlers;
+pub mod callbacks;
+pub mod keyboards;
+pub mod views;
+pub mod state;
+pub mod callback_data;
+pub mod helpers;
 
 use crate::config::Config;
 use crate::domain::SaveFormat;
 use crate::python_bridge::PythonBridge;
-use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use teloxide::prelude::*;
 use teloxide::utils::command::BotCommands;
-use tokio::sync::Mutex;
+pub use state::BotState;
 
 #[derive(BotCommands, Clone, Debug)]
 #[command(
@@ -19,6 +24,8 @@ pub enum Command {
     Start,
     #[command(description = "display help message")]
     Help,
+    #[command(description = "show hub menu")]
+    Hub,
     #[command(description = "show or set save format: /format [markdown|html|epub]")]
     Format(String),
     #[command(description = "show reading statistics")]
@@ -43,13 +50,6 @@ pub enum Command {
     Cancel,
 }
 
-pub struct BotState {
-    pub bridge: PythonBridge,
-    pub config: Config,
-    pub user_formats: Mutex<HashMap<UserId, SaveFormat>>,
-    pub pending_resets: Mutex<HashSet<UserId>>,
-}
-
 pub async fn run_telegram_bot(bridge: PythonBridge, config: Config) -> anyhow::Result<()> {
     let token = config
         .telegram_token
@@ -59,15 +59,11 @@ pub async fn run_telegram_bot(bridge: PythonBridge, config: Config) -> anyhow::R
     tracing::info!("Initializing Telegram bot event loop...");
 
     let bot = Bot::new(token);
-    let state = Arc::new(BotState {
-        bridge,
-        config,
-        user_formats: Mutex::new(HashMap::new()),
-        pending_resets: Mutex::new(HashSet::new()),
-    });
+    let state = Arc::new(BotState::new(bridge, config));
 
-    let handler =
-        dptree::entry().branch(Update::filter_message().endpoint(handlers::handle_message));
+    let handler = dptree::entry()
+        .branch(Update::filter_message().endpoint(handlers::handle_message))
+        .branch(Update::filter_callback_query().endpoint(callbacks::handle_callback_query));
 
     Dispatcher::builder(bot, handler)
         .dependencies(dptree::deps![state])
@@ -106,5 +102,18 @@ pub fn detect_format_override(text: &str, default: SaveFormat) -> SaveFormat {
         SaveFormat::Markdown
     } else {
         default
+    }
+}
+
+pub trait MapTgError<T> {
+    fn tg_err(self) -> Result<T, teloxide::RequestError>;
+}
+
+impl<T, E: std::fmt::Display> MapTgError<T> for Result<T, E> {
+    fn tg_err(self) -> Result<T, teloxide::RequestError> {
+        self.map_err(|e| {
+            let io_err = std::io::Error::new(std::io::ErrorKind::Other, e.to_string());
+            teloxide::RequestError::from(io_err)
+        })
     }
 }

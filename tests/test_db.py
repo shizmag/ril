@@ -215,3 +215,74 @@ def test_search_articles_lemmatization():
     res4 = db.search_articles("run AND crawling")
     assert len(res4) == 1
 
+def test_tags_operations():
+    art_id = db.add_article(
+        url="https://example.com/tag-test",
+        title="Tag Test",
+        file_path="/path/tag-test.md",
+        word_count=50,
+        char_count=200,
+        content="Test content"
+    )
+    # Add tags
+    db.add_tags(art_id, ["AI", "Research"])
+    article = db.get_article(art_id)
+    assert "AI" in article["tags"]
+    assert "Research" in article["tags"]
+    
+    # List tags
+    tags = db.list_tags()
+    ai_tag = next((t for t in tags if t["tag"] == "AI"), None)
+    assert ai_tag is not None
+    assert ai_tag["count"] == 1
+    
+    # Remove tag
+    db.remove_tag(art_id, "AI")
+    article = db.get_article(art_id)
+    assert "AI" not in article["tags"]
+    assert "Research" in article["tags"]
+
+def test_ratings_and_comments():
+    art_id = db.add_article(
+        url="https://example.com/rate-test",
+        title="Rate Test",
+        file_path="/path/rate-test.md",
+        word_count=50,
+        char_count=200,
+        content="Test content"
+    )
+    # Rate
+    db.rate_article(art_id, 4)
+    # Comment
+    db.set_article_comment(art_id, "Nice reading")
+    
+    article = db.get_article(art_id)
+    assert article["rating"] == 4
+    assert article["comment"] == "Nice reading"
+
+def test_search_articles_advanced():
+    art_id = db.add_article(
+        url="https://example.com/adv-test",
+        title="Advanced Search Test",
+        file_path="/path/adv-test.md",
+        word_count=50,
+        char_count=200,
+        content="Testing advanced features"
+    )
+    db.add_tags(art_id, ["Search"])
+    db.rate_article(art_id, 5)
+    
+    # Search by tag
+    res = db.search_articles_advanced(tag="Search")
+    assert res["total_count"] == 1
+    assert res["articles"][0]["id"] == art_id
+    
+    # Search by rating
+    res = db.search_articles_advanced(rating=5)
+    assert res["total_count"] == 1
+    
+    # Search by query and rating
+    res = db.search_articles_advanced(query="search", rating=5)
+    assert res["total_count"] == 1
+
+

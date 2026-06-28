@@ -71,6 +71,80 @@ async def handle_reset_library(args):
     core.reset_library()
     return {"success": True}
 
+async def handle_search_articles_advanced(args):
+    query = args.get("query")
+    status = args.get("status")
+    tag = args.get("tag")
+    rating = args.get("rating")
+    if rating is not None:
+        rating = int(rating)
+    domain = args.get("domain")
+    no_tags = bool(args.get("no_tags", False))
+    no_rating = bool(args.get("no_rating", False))
+    date_added = args.get("date_added")
+    limit = int(args.get("limit", 10))
+    offset = int(args.get("offset", 0))
+    
+    return db.search_articles_advanced(
+        query=query,
+        status=status,
+        tag=tag,
+        rating=rating,
+        domain=domain,
+        no_tags=no_tags,
+        no_rating=no_rating,
+        date_added=date_added,
+        limit=limit,
+        offset=offset
+    )
+
+async def handle_add_tags(args):
+    article_id = int(args.get("article_id"))
+    tags = args.get("tags", [])
+    if isinstance(tags, str):
+        tags = [t.strip() for t in tags.split(",") if t.strip()]
+    db.add_tags(article_id, tags)
+    return {"success": True}
+
+async def handle_remove_tag(args):
+    article_id = int(args.get("article_id"))
+    tag = args.get("tag")
+    success = db.remove_tag(article_id, tag)
+    return {"success": success}
+
+async def handle_list_tags(args):
+    return db.list_tags()
+
+async def handle_rate_article(args):
+    article_id = int(args.get("article_id"))
+    rating = args.get("rating")
+    if rating is not None:
+        rating = int(rating)
+    success = db.rate_article(article_id, rating)
+    return {"success": success}
+
+async def handle_set_article_comment(args):
+    article_id = int(args.get("article_id"))
+    comment = args.get("comment")
+    success = db.set_article_comment(article_id, comment)
+    return {"success": success}
+
+async def handle_get_extended_stats(args):
+    return db.get_extended_stats()
+
+async def handle_get_sources_stats(args):
+    limit = int(args.get("limit", 10))
+    return db.get_sources_stats(limit=limit)
+
+async def handle_get_tags_stats(args):
+    return db.get_tags_stats()
+
+async def handle_get_ratings_stats(args):
+    return db.get_ratings_stats()
+
+async def handle_get_dynamics_stats(args):
+    return db.get_dynamics_stats()
+
 async def main():
     try:
         # Read from stdin
@@ -100,7 +174,18 @@ async def main():
             "get_reading_stats": handle_get_reading_stats,
             "get_article_content": handle_get_article_content,
             "delete_article": handle_delete_article,
-            "reset_library": handle_reset_library
+            "reset_library": handle_reset_library,
+            "search_articles_advanced": handle_search_articles_advanced,
+            "add_tags": handle_add_tags,
+            "remove_tag": handle_remove_tag,
+            "list_tags": handle_list_tags,
+            "rate_article": handle_rate_article,
+            "set_article_comment": handle_set_article_comment,
+            "get_extended_stats": handle_get_extended_stats,
+            "get_sources_stats": handle_get_sources_stats,
+            "get_tags_stats": handle_get_tags_stats,
+            "get_ratings_stats": handle_get_ratings_stats,
+            "get_dynamics_stats": handle_get_dynamics_stats
         }
         
         if command not in commands:
