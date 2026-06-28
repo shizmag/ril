@@ -484,6 +484,118 @@ async def delete_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ Произошла ошибка при удалении статьи.")
 
 @check_user
+async def read_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Mark article as read by ID."""
+    try:
+        await update.message.delete()
+    except Exception:
+        pass
+
+    if not context.args:
+        warning_msg = await update.message.reply_text(
+            "💡 Пожалуйста, укажите ID статьи. Пример: `/read 5`",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("🗑️ Закрыть", callback_data="delete_this_msg")
+            ]]),
+            parse_mode="Markdown"
+        )
+        asyncio.create_task(delayed_delete(context, update.effective_chat.id, warning_msg.message_id, 10))
+        return
+        
+    try:
+        article_id = int(context.args[0])
+    except ValueError:
+        warning_msg = await update.message.reply_text(
+            "❌ ID статьи должен быть числом. Пример: `/read 5`",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("🗑️ Закрыть", callback_data="delete_this_msg")
+            ]])
+        )
+        asyncio.create_task(delayed_delete(context, update.effective_chat.id, warning_msg.message_id, 10))
+        return
+        
+    try:
+        article = db.get_article(article_id)
+        if not article:
+            warning_msg = await update.message.reply_text(
+                f"❌ Статья с ID {article_id} не найдена.",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("🗑️ Закрыть", callback_data="delete_this_msg")
+                ]])
+            )
+            asyncio.create_task(delayed_delete(context, update.effective_chat.id, warning_msg.message_id, 10))
+            return
+            
+        db.mark_as_read(article_id, "read")
+        success_msg = await update.message.reply_text(
+            f"✅ Статья *\"{article['title']}\"* (ID: {article_id}) отмечена как прочитанная.",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("🗑️ Закрыть", callback_data="delete_this_msg")
+            ]]),
+            parse_mode="Markdown"
+        )
+        asyncio.create_task(delayed_delete(context, update.effective_chat.id, success_msg.message_id, 5))
+    except Exception as e:
+        logger.error(f"Error marking article {article_id} as read: {e}")
+        await update.message.reply_text(f"❌ Произошла ошибка при изменении статуса статьи.")
+
+@check_user
+async def unread_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Mark article as unread by ID."""
+    try:
+        await update.message.delete()
+    except Exception:
+        pass
+
+    if not context.args:
+        warning_msg = await update.message.reply_text(
+            "💡 Пожалуйста, укажите ID статьи. Пример: `/unread 5`",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("🗑️ Закрыть", callback_data="delete_this_msg")
+            ]]),
+            parse_mode="Markdown"
+        )
+        asyncio.create_task(delayed_delete(context, update.effective_chat.id, warning_msg.message_id, 10))
+        return
+        
+    try:
+        article_id = int(context.args[0])
+    except ValueError:
+        warning_msg = await update.message.reply_text(
+            "❌ ID статьи должен быть числом. Пример: `/unread 5`",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("🗑️ Закрыть", callback_data="delete_this_msg")
+            ]])
+        )
+        asyncio.create_task(delayed_delete(context, update.effective_chat.id, warning_msg.message_id, 10))
+        return
+        
+    try:
+        article = db.get_article(article_id)
+        if not article:
+            warning_msg = await update.message.reply_text(
+                f"❌ Статья с ID {article_id} не найдена.",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("🗑️ Закрыть", callback_data="delete_this_msg")
+                ]])
+            )
+            asyncio.create_task(delayed_delete(context, update.effective_chat.id, warning_msg.message_id, 10))
+            return
+            
+        db.mark_as_read(article_id, "unread")
+        success_msg = await update.message.reply_text(
+            f"📥 Статья *\"{article['title']}\"* (ID: {article_id}) отмечена как непрочитанная.",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("🗑️ Закрыть", callback_data="delete_this_msg")
+            ]]),
+            parse_mode="Markdown"
+        )
+        asyncio.create_task(delayed_delete(context, update.effective_chat.id, success_msg.message_id, 5))
+    except Exception as e:
+        logger.error(f"Error marking article {article_id} as unread: {e}")
+        await update.message.reply_text(f"❌ Произошла ошибка при изменении статуса статьи.")
+
+@check_user
 async def reset_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handler for the /reset command."""
     try:
@@ -829,7 +941,8 @@ def run_bot():
     app.add_handler(CommandHandler("list", list_command))
     app.add_handler(CommandHandler("search", search_command))
     app.add_handler(CommandHandler("get", get_command))
-    app.add_handler(CommandHandler("read", get_command))
+    app.add_handler(CommandHandler("read", read_command))
+    app.add_handler(CommandHandler("unread", unread_command))
     app.add_handler(CommandHandler("delete", delete_command))
     app.add_handler(CommandHandler("format", format_command))
     app.add_handler(CommandHandler("reset", reset_command))

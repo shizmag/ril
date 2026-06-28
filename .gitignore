@@ -19,3 +19,12 @@ library/*
 *.db-journal
 *.db-wal
 *.db-shm
+
+# Rust build artifacts
+target/
+ril-daemon/target/
+
+# LLVM Code Coverage artifacts
+*.profraw
+*.profdata
+

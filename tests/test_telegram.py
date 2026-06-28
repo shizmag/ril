@@ -399,7 +399,7 @@ def test_telegram_run_bot(mocker):
     telegram_bot.run_bot()
     
     mock_app_built.run_polling.assert_called_once()
-    assert mock_app_built.add_handler.call_count == 12
+    assert mock_app_built.add_handler.call_count == 13
 
 def test_telegram_run_bot_no_token(mocker):
     mocker.patch("ril.telegram_bot.TELEGRAM_TOKEN", None)

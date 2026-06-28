@@ -153,3 +153,62 @@ def test_reset_library(setup_test_environment):
     assert not img2_dir.exists()
     assert (library_dir / "images").exists() # The images directory itself should exist
     assert setup_test_environment["db_path"].exists() # The database file itself should still exist
+
+@pytest.mark.asyncio
+async def test_process_url_pdf(mocker, setup_test_environment):
+    # Mock download_pdf to just return a dummy path
+    mocker.patch("ril.core.download_pdf", return_value=setup_test_environment["library_dir"] / "temp.pdf")
+    
+    # Mock marker classes and functions
+    mocker.patch("marker.models.create_model_dict", return_value={})
+    
+    mock_config = mocker.patch("marker.config.parser.ConfigParser")
+    mock_config_parser = mock_config.return_value
+    mock_config_parser.generate_config_dict.return_value = {}
+    mock_config_parser.get_processors.return_value = []
+    mock_config_parser.get_renderer.return_value = None
+    mock_config_parser.get_llm_service.return_value = None
+    
+    mock_converter_cls = mock_config_parser.get_converter_cls.return_value
+    mock_converter_obj = mock_converter_cls.return_value
+    
+    # Mock returned rendered object
+    from pydantic import BaseModel
+    class MockRendered(BaseModel):
+        metadata: dict = {"title": "Mock PDF Title"}
+        
+    mock_rendered = MockRendered()
+    mock_converter_obj.return_value = mock_rendered
+    
+    from PIL import Image
+    mock_img = Image.new("RGB", (100, 100))
+    
+    # Mock text_from_rendered to return mock markdown text and one mock image
+    mocker.patch("marker.output.text_from_rendered", return_value=(
+        "# Mock PDF Title\n\nSome text.\n\n![image-0.jpg](image-0.jpg)",
+        "md",
+        {"image-0.jpg": mock_img}
+    ))
+    
+    # Execute process_url with a PDF URL
+    result = await core.process_url("https://example.com/test-paper.pdf")
+    
+    # Verify results
+    assert result["title"] == "Mock PDF Title"
+    assert result["url"] == "https://example.com/test-paper.pdf"
+    assert result["status"] == "unread"
+    
+    # Verify file saved
+    file_path = result["file_path"]
+    assert os.path.exists(file_path)
+    with open(file_path, "r", encoding="utf-8") as f:
+        content = f.read()
+        assert "# Mock PDF Title" in content
+        assert "![image-0.jpg][img_ref_0]" in content
+        assert "[img_ref_0]: data:image/jpeg;base64," in content
+        
+    # Verify database record
+    db_article = db.get_article(result["id"])
+    assert db_article is not None
+    assert db_article["title"] == "Mock PDF Title"
+

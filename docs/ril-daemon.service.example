@@ -1,0 +1,15 @@
+[Unit]
+Description=Read It Later (RIL) Daemon
+After=network.target
+
+[Service]
+Type=simple
+User=vladimirkasterin
+WorkingDirectory=/Users/vladimirkasterin/python/ril
+EnvironmentFile=/Users/vladimirkasterin/python/ril/.env
+ExecStart=/Users/vladimirkasterin/python/ril/ril-daemon/target/release/ril-daemon daemon
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

@@ -14,8 +14,9 @@ dependencies = [
     "lxml>=5.1.0",
     "python-telegram-bot>=21.0",
     "python-dotenv>=1.0.1",
-    "pillow>=12.2.0",
+    "pillow>=10.1.0,<11.0.0",
     "spacy>=3.8.14",
+    "marker-pdf>=1.10.2",
 ]
 
 [project.scripts]

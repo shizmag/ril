@@ -31,84 +31,240 @@ def sanitize_filename(title: str) -> str:
     # Limit length to avoid path errors, then strip leading/trailing underscores and hyphens
     return name[:60].strip('_-')
 
+def download_pdf(url: str) -> Path:
+    """Download PDF to a temporary file."""
+    import urllib.request
+    import tempfile
+    import shutil
+    
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
+    }
+    req = urllib.request.Request(url, headers=headers)
+    
+    temp_dir = Path(tempfile.gettempdir())
+    temp_pdf_path = temp_dir / f"download_{tempfile.mktemp(dir='')}.pdf"
+    
+    logger.info(f"Downloading PDF from {url} to {temp_pdf_path}...")
+    with urllib.request.urlopen(req) as response:
+        with open(temp_pdf_path, 'wb') as out_file:
+            shutil.copyfileobj(response, out_file)
+            
+    return temp_pdf_path
+
 async def process_url(
     url: str,
     converter: Optional[BaseConverter] = None
 ) -> Dict[str, Any]:
     """
     Run the full Read It Later pipeline for a URL.
-    1. Fetch HTML using Playwright
-    2. Extract core text using Readability
-    3. Convert content using the chosen Converter adapter
-    4. Save Markdown/images locally
-    5. Save metadata and index for Search in SQLite
+    Supports PDF parsing via marker-pdf.
+    1. Fetch HTML using Playwright or download PDF directly
+    2. Convert content (using marker-pdf for PDFs, or chosen converter for HTML)
+    3. Save Markdown/images locally
+    4. Save metadata and index for Search in SQLite
     """
     if not converter:
         converter = MarkdownConverter()
         
     logger.info(f"Processing URL: {url}")
     
-    # 1. Fetch
-    html = await fetch_html(url)
+    url_lower = url.lower()
+    is_pdf = url_lower.split('?')[0].endswith('.pdf') or '/pdf/' in url_lower
+    temp_pdf_path = None
     
-    # 2. Extract title & clean HTML
-    title, clean_html = extract_article(html)
-    
-    # Generate unique slug with date prefix
-    date_str = datetime.date.today().strftime("%Y-%m-%d")
-    clean_title = sanitize_filename(title)
-    slug = f"{date_str}_{clean_title}"
-    if not clean_title:
-        slug = f"{date_str}_article"
-        
-    # 3. Convert (downloads images and changes paths)
-    content = await converter.convert(clean_html, url, slug)
-    
-    # 4. Save file
-    file_name = f"{slug}{converter.file_extension}"
-    file_path = config.LIBRARY_DIR / file_name
-    
-    # Ensure library directory exists before writing to it
-    config.LIBRARY_DIR.mkdir(parents=True, exist_ok=True)
-    (config.LIBRARY_DIR / "images").mkdir(parents=True, exist_ok=True)
-    
-    if isinstance(content, bytes):
-        with open(file_path, "wb") as f:
-            f.write(content)
+    if is_pdf:
+        try:
+            temp_pdf_path = download_pdf(url)
+        except Exception as e:
+            logger.error(f"Failed to download PDF directly: {e}")
+            raise e
     else:
-        with open(file_path, "w", encoding="utf-8") as f:
-            f.write(content)
+        try:
+            html = await fetch_html(url)
+        except Exception as e:
+            if "Download is starting" in str(e):
+                is_pdf = True
+                try:
+                    temp_pdf_path = download_pdf(url)
+                except Exception as e2:
+                    logger.error(f"Failed to download PDF after Playwright download trigger: {e2}")
+                    raise e2
+            else:
+                raise e
+
+    if is_pdf:
+        pdf_title = None
+        pdf_markdown = ""
+        try:
+            from marker.config.parser import ConfigParser
+            from marker.models import create_model_dict
+            from marker.output import text_from_rendered
+            import base64
+            import io
+            import os
+            
+            os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
+            
+            logger.info("Initializing marker-pdf models...")
+            models = create_model_dict()
+            config_parser = ConfigParser({"output_format": "markdown", "disable_ocr": True})
+
+            converter_cls = config_parser.get_converter_cls()
+            converter_obj = converter_cls(
+                config=config_parser.generate_config_dict(),
+                artifact_dict=models,
+                processor_list=config_parser.get_processors(),
+                renderer=config_parser.get_renderer(),
+                llm_service=config_parser.get_llm_service(),
+            )
+            
+            logger.info(f"Converting PDF {temp_pdf_path} using marker-pdf...")
+            rendered = converter_obj(str(temp_pdf_path))
+            pdf_markdown, ext, images = text_from_rendered(rendered)
+            
+            if rendered.metadata and isinstance(rendered.metadata, dict):
+                pdf_title = rendered.metadata.get("title")
+                
+            if not pdf_title:
+                url_path = url.split('?')[0].split('/')[-1]
+                if url_path:
+                    pdf_title = url_path.replace(".pdf", "").replace("_", " ").replace("-", " ").title()
+                else:
+                    pdf_title = "PDF Document"
+                    
+            if images:
+                image_refs = {}
+                for idx, (img_name, img_obj) in enumerate(images.items()):
+                    ref_id = f"img_ref_{idx}"
+                    buffered = io.BytesIO()
+                    img_format = img_obj.format if img_obj.format else "JPEG"
+                    if img_obj.mode != "RGB" and img_format in ("JPEG", "JPG"):
+                        img_obj = img_obj.convert("RGB")
+                    img_obj.save(buffered, format=img_format)
+                    img_b64 = base64.b64encode(buffered.getvalue()).decode("utf-8")
+                    mime_type = f"image/{img_format.lower()}"
+                    if mime_type == "image/jpg":
+                        mime_type = "image/jpeg"
+                    b64_uri = f"data:{mime_type};base64,{img_b64}"
+                    image_refs[ref_id] = b64_uri
+                    
+                    escaped_name = re.escape(img_name)
+                    pdf_markdown = re.sub(
+                        rf'!\[(.*?)\]\({escaped_name}\)',
+                        rf'![\1][{ref_id}]',
+                        pdf_markdown
+                    )
+                pdf_markdown += "\n\n"
+                for ref_id, b64_uri in image_refs.items():
+                    pdf_markdown += f"[{ref_id}]: {b64_uri}\n"
+                    
+        except Exception as e:
+            logger.error(f"Error converting PDF via marker-pdf: {e}")
+            raise e
+        finally:
+            try:
+                if temp_pdf_path and temp_pdf_path.exists():
+                    temp_pdf_path.unlink()
+            except Exception as e:
+                logger.warning(f"Failed to delete temp PDF file: {e}")
+                
+        date_str = datetime.date.today().strftime("%Y-%m-%d")
+        clean_title = sanitize_filename(pdf_title)
+        slug = f"{date_str}_{clean_title}"
+        if not clean_title:
+            slug = f"{date_str}_pdf_document"
+            
+        file_name = f"{slug}.md"
+        file_path = config.LIBRARY_DIR / file_name
         
-    # Extract plain text for word counting and search indexing
-    from bs4 import BeautifulSoup
-    search_soup = BeautifulSoup(clean_html, "lxml")
-    search_text = search_soup.get_text(separator=" ")
-    
-    # Calculate word and char count based on plain text
-    word_count = len(re.findall(r'\w+', search_text))
-    char_count = len(search_text)
-    
-    # 5. Save to database & FTS
-    article_id = db.add_article(
-        url=url,
-        title=title,
-        file_path=str(file_path),
-        word_count=word_count,
-        char_count=char_count,
-        content=search_text
-    )
-    
-    logger.info(f"Successfully saved article: {title} (ID: {article_id})")
-    
-    return {
-        "id": article_id,
-        "url": url,
-        "title": title,
-        "file_path": str(file_path),
-        "word_count": word_count,
-        "char_count": char_count,
-        "status": "unread"
-    }
+        config.LIBRARY_DIR.mkdir(parents=True, exist_ok=True)
+        with open(file_path, "w", encoding="utf-8") as f:
+            f.write(pdf_markdown)
+            
+        search_text = re.sub(r'[*#_`\[\]\-!]', ' ', pdf_markdown)
+        word_count = len(re.findall(r'\w+', search_text))
+        char_count = len(search_text)
+        
+        article_id = db.add_article(
+            url=url,
+            title=pdf_title,
+            file_path=str(file_path),
+            word_count=word_count,
+            char_count=char_count,
+            content=search_text
+        )
+        
+        logger.info(f"Successfully saved PDF article: {pdf_title} (ID: {article_id})")
+        
+        return {
+            "id": article_id,
+            "url": url,
+            "title": pdf_title,
+            "file_path": str(file_path),
+            "word_count": word_count,
+            "char_count": char_count,
+            "status": "unread"
+        }
+    else:
+        # 2. Extract title & clean HTML
+        title, clean_html = extract_article(html)
+        
+        # Generate unique slug with date prefix
+        date_str = datetime.date.today().strftime("%Y-%m-%d")
+        clean_title = sanitize_filename(title)
+        slug = f"{date_str}_{clean_title}"
+        if not clean_title:
+            slug = f"{date_str}_article"
+            
+        # 3. Convert (downloads images and changes paths)
+        content = await converter.convert(clean_html, url, slug)
+        
+        # 4. Save file
+        file_name = f"{slug}{converter.file_extension}"
+        file_path = config.LIBRARY_DIR / file_name
+        
+        # Ensure library directory exists before writing to it
+        config.LIBRARY_DIR.mkdir(parents=True, exist_ok=True)
+        (config.LIBRARY_DIR / "images").mkdir(parents=True, exist_ok=True)
+        
+        if isinstance(content, bytes):
+            with open(file_path, "wb") as f:
+                f.write(content)
+        else:
+            with open(file_path, "w", encoding="utf-8") as f:
+                f.write(content)
+            
+        # Extract plain text for word counting and search indexing
+        from bs4 import BeautifulSoup
+        search_soup = BeautifulSoup(clean_html, "lxml")
+        search_text = search_soup.get_text(separator=" ")
+        
+        # Calculate word and char count based on plain text
+        word_count = len(re.findall(r'\w+', search_text))
+        char_count = len(search_text)
+        
+        # 5. Save to database & FTS
+        article_id = db.add_article(
+            url=url,
+            title=title,
+            file_path=str(file_path),
+            word_count=word_count,
+            char_count=char_count,
+            content=search_text
+        )
+        
+        logger.info(f"Successfully saved article: {title} (ID: {article_id})")
+        
+        return {
+            "id": article_id,
+            "url": url,
+            "title": title,
+            "file_path": str(file_path),
+            "word_count": word_count,
+            "char_count": char_count,
+            "status": "unread"
+        }
 
 def delete_article(article_id: int) -> bool:
     """Delete an article from database and clean up its files (markdown and images)."""
