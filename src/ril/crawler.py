@@ -212,12 +212,11 @@ async def fetch_html(
             
         try:
             # Navigate to the page
-            # We try 'networkidle' but fall back to 'domcontentloaded' or 'load' on failure/timeout
+            # Use 'load' instead of 'networkidle' to avoid hanging on sites with active background connections (trackers, analytics, etc.)
             try:
-                await page.goto(url, timeout=timeout_ms, wait_until="networkidle")
-            except Exception as e:
-                logger.warning(f"Timeout or error waiting for networkidle, trying load: {e}")
                 await page.goto(url, timeout=timeout_ms, wait_until="load")
+            except Exception as e:
+                logger.warning(f"Timeout or error waiting for page load: {e}. Attempting to proceed with current DOM content.")
                 
             # Dismiss cookie consent overlays if present (clicks any remaining buttons)
             await dismiss_cookie_consent(page)

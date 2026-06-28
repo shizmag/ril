@@ -16,3 +16,5 @@ teloxide = { version = "0.12", features = ["macros"] }
 uuid = { version = "1.6", features = ["v4"] }
 directories = "5.0"
 dotenvy = "0.15"
+reqwest = "0.11"
+tempfile = "3.8"

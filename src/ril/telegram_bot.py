@@ -43,6 +43,22 @@ def make_progress_bar(pct: float) -> str:
     empty = total_blocks - filled
     return "█" * filled + "░" * empty
 
+def get_document_keyboard(art_id: int, status: str) -> InlineKeyboardMarkup:
+    toggle_text = "📥 Не прочитано" if status == 'read' else "✅ Прочитано"
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton(toggle_text, callback_data=f"toggle_doc:{art_id}"),
+            InlineKeyboardButton("🗑️ Удалить", callback_data=f"del_doc:{art_id}")
+        ],
+        [
+            InlineKeyboardButton("⭐ 1", callback_data=f"rate_doc:{art_id}:1"),
+            InlineKeyboardButton("⭐ 2", callback_data=f"rate_doc:{art_id}:2"),
+            InlineKeyboardButton("⭐ 3", callback_data=f"rate_doc:{art_id}:3"),
+            InlineKeyboardButton("⭐ 4", callback_data=f"rate_doc:{art_id}:4"),
+            InlineKeyboardButton("⭐ 5", callback_data=f"rate_doc:{art_id}:5"),
+        ]
+    ])
+
 @check_user
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handler for the /start command."""
@@ -128,6 +144,8 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
             
         progress = round((stats_data['read_articles'] / total) * 100, 1)
+        total_mins = max(1, round(stats_data['total_words'] / 200))
+        read_mins = round(stats_data['read_words'] / 200)
         unread_mins = round(stats_data['unread_words'] / 200)
         bar = make_progress_bar(progress)
         
@@ -140,8 +158,12 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"📈 Прогресс чтения:\n"
             f"`{bar}`  *{progress}%*\n"
             f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"⏱️ *Время на чтение:*\n"
+            f"  • Всего: *~{total_mins} мин.*\n"
+            f"  • Прочитано: *~{read_mins} мин.*\n"
+            f"  • Осталось: *~{unread_mins} мин.*\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
             f"📝 Всего слов сохранено: *{stats_data['total_words']:,}*\n"
-            f"⏱️ Осталось читать: *~{unread_mins} мин*\n"
             f"📐 Средний размер: *{stats_data['avg_words_per_article']:.0f} слов*"
         )
         sent_msg = await update.message.reply_text(msg, reply_markup=keyboard, parse_mode="Markdown")
@@ -170,7 +192,6 @@ async def show_articles_list(update: Update, context: ContextTypes.DEFAULT_TYPE,
         else:
             msg_lines = ["📋 *Последние сохранённые статьи:*\n"]
             keyboard_buttons = []
-            row = []
             for idx, a in enumerate(articles, 1):
                 status_icon = "✅" if a['status'] == 'read' else "📥"
                 unread_mins = max(1, round(a['word_count'] / 200))
@@ -178,17 +199,17 @@ async def show_articles_list(update: Update, context: ContextTypes.DEFAULT_TYPE,
                     f"*{idx}.* {status_icon} *{a['title']}*\n"
                     f"   _ID: {a['id']} | Слов: {a['word_count']} (~{unread_mins} мин)_\n"
                 )
-                row.append(InlineKeyboardButton(text=f"📄 {a['id']}", callback_data=f"art:{a['id']}"))
-                if len(row) == 5:
-                    keyboard_buttons.append(row)
-                    row = []
-            if row:
-                keyboard_buttons.append(row)
-            
+                title = a['title']
+                if len(title) > 18:
+                    title = title[:15] + "..."
+                keyboard_buttons.append([
+                    InlineKeyboardButton(text=f"📄 [{a['id']}] {title}", callback_data=f"art:{a['id']}"),
+                    InlineKeyboardButton(text="📥 Скачать", callback_data=f"get:{a['id']}")
+                ])
             keyboard_buttons.append([close_btn])
                 
             text = "\n".join(msg_lines)
-            text += "\n💡 _Выберите ID статьи на кнопках ниже для управления или просмотра её деталей._"
+            text += "\n💡 _Выберите действие на кнопках ниже для просмотра или скачивания статьи._"
             keyboard = InlineKeyboardMarkup(keyboard_buttons)
             
         if edit:
@@ -233,7 +254,7 @@ async def show_article_details(update: Update, context: ContextTypes.DEFAULT_TYP
     toggle_label = "📥 В нечитаемые" if article['status'] == 'read' else "✅ Прочитано"
     keyboard = InlineKeyboardMarkup([
         [
-            InlineKeyboardButton("💾 Получить MD", callback_data=f"get:{article['id']}"),
+            InlineKeyboardButton("📥 Скачать файл", callback_data=f"get:{article['id']}"),
             InlineKeyboardButton(toggle_label, callback_data=f"toggle:{article['id']}")
         ],
         [
@@ -323,7 +344,13 @@ async def search_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"{status_icon} *ID {r['id']}*: {r['title']}\n"
                 f"📝 _{r['snippet']}_\n"
             )
-            keyboard_buttons.append([InlineKeyboardButton(text=f"📖 Открыть ID {r['id']}", callback_data=f"art:{r['id']}")])
+            title = r['title']
+            if len(title) > 18:
+                title = title[:15] + "..."
+            keyboard_buttons.append([
+                InlineKeyboardButton(text=f"📄 [{r['id']}] {title}", callback_data=f"art:{r['id']}"),
+                InlineKeyboardButton(text="📥 Скачать", callback_data=f"get:{r['id']}")
+            ])
             
         keyboard_buttons.append([InlineKeyboardButton("🗑️ Закрыть результаты", callback_data="delete_this_msg")])
 
@@ -385,18 +412,13 @@ async def get_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             title = article['title']
             word_count = article['word_count']
             status_icon = "✅" if article['status'] == 'read' else "📥"
+            read_time = max(1, round(word_count / 200))
             caption = (
                 f"{status_icon} *{title}*\n"
-                f"📂 ID статьи: `{article_id}` | Слов: {word_count}\n"
+                f"📂 ID статьи: `{article_id}` | Слов: {word_count} (*~{read_time} мин. чтения*)\n"
                 f"🔗 {article['url']}"
             )
-            toggle_text = "📥 Не прочитано" if article['status'] == 'read' else "✅ Прочитано"
-            keyboard = InlineKeyboardMarkup([
-                [
-                    InlineKeyboardButton(toggle_text, callback_data=f"toggle_doc:{article_id}"),
-                    InlineKeyboardButton("🗑️ Удалить", callback_data=f"del_doc:{article_id}")
-                ]
-            ])
+            keyboard = get_document_keyboard(article_id, article['status'])
             with open(file_path, 'rb') as doc_file:
                 await update.message.reply_document(
                     document=doc_file,
@@ -665,10 +687,11 @@ async def _import_single_url(
             file_path = res['file_path']
             article_id = res['id']
             
+            read_time = max(1, round(word_count / 200))
             response_text = (
                 f"📥 *Сохранил!*\n\n"
                 f"*{title}*\n"
-                f"Слов: {word_count}\n"
+                f"Слов: {word_count} (*~{read_time} мин. чтения*)\n"
                 f"ID статьи: `{article_id}`\n"
                 f"🔗 {url}"
             )
@@ -677,12 +700,7 @@ async def _import_single_url(
             await safe_delete_message(context, update.effective_chat.id, status_msg.message_id)
             
             # Action buttons for document message
-            keyboard = InlineKeyboardMarkup([
-                [
-                    InlineKeyboardButton("✅ Прочитано", callback_data=f"toggle_doc:{article_id}"),
-                    InlineKeyboardButton("🗑️ Удалить", callback_data=f"del_doc:{article_id}")
-                ]
-            ])
+            keyboard = get_document_keyboard(article_id, "unread")
             
             # Send file as document
             if os.path.exists(file_path):
@@ -852,22 +870,48 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
             # Update caption of the document
             status_icon = "✅" if new_status == 'read' else "📥"
+            read_time = max(1, round(article['word_count'] / 200))
+            rating_val = article.get('rating')
+            rating_str = "⭐" * rating_val if rating_val else "нет оценки"
             caption = (
                 f"{status_icon} *{article['title']}*\n"
-                f"📂 ID статьи: `{art_id}` | Слов: {article['word_count']}\n"
+                f"📂 ID статьи: `{art_id}` | Слов: {article['word_count']} (*~{read_time} мин. чтения*)\n"
+                f"⭐ Оценка: {rating_str}\n"
                 f"🔗 {article['url']}"
             )
-            toggle_text = "📥 Не прочитано" if new_status == 'read' else "✅ Прочитано"
-            keyboard = InlineKeyboardMarkup([
-                [
-                    InlineKeyboardButton(toggle_text, callback_data=f"toggle_doc:{art_id}"),
-                    InlineKeyboardButton("🗑️ Удалить", callback_data=f"del_doc:{art_id}")
-                ]
-            ])
+            keyboard = get_document_keyboard(art_id, new_status)
             try:
                 await query.edit_message_caption(caption=caption, reply_markup=keyboard, parse_mode="Markdown")
             except Exception as e:
-                logger.error(f"Error editing caption: {e}")
+                if "not modified" not in str(e).lower():
+                    logger.error(f"Error editing caption: {e}")
+        else:
+            await query.answer("❌ Статья не найдена.", show_alert=True)
+            
+    elif data.startswith("rate_doc:"):
+        parts = data.split(':')
+        art_id = int(parts[1])
+        rating = int(parts[2])
+        db.rate_article(art_id, rating)
+        await query.answer(f"Оценка {'⭐' * rating} успешно установлена!", show_alert=True)
+        
+        article = db.get_article(art_id)
+        if article:
+            status_icon = "✅" if article['status'] == 'read' else "📥"
+            read_time = max(1, round(article['word_count'] / 200))
+            rating_str = "⭐" * rating
+            caption = (
+                f"{status_icon} *{article['title']}*\n"
+                f"📂 ID статьи: `{art_id}` | Слов: {article['word_count']} (*~{read_time} мин. чтения*)\n"
+                f"⭐ Оценка: {rating_str}\n"
+                f"🔗 {article['url']}"
+            )
+            keyboard = get_document_keyboard(art_id, article['status'])
+            try:
+                await query.edit_message_caption(caption=caption, reply_markup=keyboard, parse_mode="Markdown")
+            except Exception as e:
+                if "not modified" not in str(e).lower():
+                    logger.error(f"Error editing caption: {e}")
         else:
             await query.answer("❌ Статья не найдена.", show_alert=True)
             

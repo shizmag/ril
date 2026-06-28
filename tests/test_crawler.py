@@ -43,7 +43,7 @@ async def test_fetch_html_success(mocker):
     
     assert html == "<html>Mocked content</html>"
     mock_chromium.launch.assert_called_once_with(headless=True)
-    mock_page.goto.assert_called_once_with("https://example.com", timeout=30000, wait_until="networkidle")
+    mock_page.goto.assert_called_once_with("https://example.com", timeout=30000, wait_until="load")
     mock_stealth.assert_called_once_with(mock_page)
     mock_context.close.assert_called_once()
     mock_browser.close.assert_called_once()
@@ -54,8 +54,8 @@ async def test_fetch_html_fallback(mocker):
     mock_page = AsyncMock()
     mock_page.content = AsyncMock(return_value="<html>Fallback content</html>")
     
-    # Mock page.goto to throw on first call and succeed on second
-    mock_page.goto = AsyncMock(side_effect=[Exception("Network Idle Timeout"), None])
+    # Mock page.goto to throw on call
+    mock_page.goto = AsyncMock(side_effect=Exception("Load Timeout"))
     
     # Mock Context & Browser
     mock_context = AsyncMock()
@@ -82,7 +82,6 @@ async def test_fetch_html_fallback(mocker):
     html = await crawler.fetch_html("https://example.com", stealth=False)
     
     assert html == "<html>Fallback content</html>"
-    # Verified it fell back from networkidle to load
-    assert mock_page.goto.call_count == 2
-    mock_page.goto.assert_any_call("https://example.com", timeout=30000, wait_until="networkidle")
-    mock_page.goto.assert_any_call("https://example.com", timeout=30000, wait_until="load")
+    # Verified it tried to go to page but proceeded on error without reloading
+    assert mock_page.goto.call_count == 1
+    mock_page.goto.assert_called_once_with("https://example.com", timeout=30000, wait_until="load")

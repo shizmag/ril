@@ -1,9 +1,9 @@
+use crate::config::Config;
 use crate::domain::SaveFormat;
 use crate::python_bridge::PythonBridge;
-use crate::config::Config;
 use std::collections::{HashMap, HashSet};
-use tokio::sync::Mutex;
 use teloxide::types::UserId;
+use tokio::sync::Mutex;
 
 #[derive(Debug, Clone, Default)]
 pub struct SearchSession {
@@ -33,6 +33,7 @@ pub struct BotState {
     pub pending_resets: Mutex<HashSet<UserId>>,
     pub pending_states: Mutex<HashMap<UserId, PendingState>>,
     pub search_sessions: Mutex<HashMap<UserId, SearchSession>>,
+    pub last_menu_messages: Mutex<HashMap<UserId, i32>>,
 }
 
 impl BotState {
@@ -44,6 +45,7 @@ impl BotState {
             pending_resets: Mutex::new(HashSet::new()),
             pending_states: Mutex::new(HashMap::new()),
             search_sessions: Mutex::new(HashMap::new()),
+            last_menu_messages: Mutex::new(HashMap::new()),
         }
     }
 
@@ -72,12 +74,24 @@ impl BotState {
         F: FnOnce(&mut SearchSession),
     {
         let mut sessions = self.search_sessions.lock().await;
-        let session = sessions.entry(user_id).or_insert_with(SearchSession::default);
+        let session = sessions
+            .entry(user_id)
+            .or_insert_with(SearchSession::default);
         f(session);
     }
 
     pub async fn clear_search_session(&self, user_id: UserId) {
         let mut sessions = self.search_sessions.lock().await;
         sessions.remove(&user_id);
+    }
+
+    pub async fn get_and_clear_last_menu(&self, user_id: UserId) -> Option<i32> {
+        let mut map = self.last_menu_messages.lock().await;
+        map.remove(&user_id)
+    }
+
+    pub async fn set_last_menu(&self, user_id: UserId, msg_id: i32) {
+        let mut map = self.last_menu_messages.lock().await;
+        map.insert(user_id, msg_id);
     }
 }

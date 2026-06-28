@@ -94,27 +94,57 @@ impl FromStr for CallbackAction {
             }
         }
         if s.starts_with("art:") {
-            let id = s.split(':').nth(1).ok_or("Missing ID")?.parse::<i64>().map_err(|e| e.to_string())?;
+            let id = s
+                .split(':')
+                .nth(1)
+                .ok_or("Missing ID")?
+                .parse::<i64>()
+                .map_err(|e| e.to_string())?;
             return Ok(CallbackAction::Article { id });
         }
         if s.starts_with("read:") {
-            let id = s.split(':').nth(1).ok_or("Missing ID")?.parse::<i64>().map_err(|e| e.to_string())?;
+            let id = s
+                .split(':')
+                .nth(1)
+                .ok_or("Missing ID")?
+                .parse::<i64>()
+                .map_err(|e| e.to_string())?;
             return Ok(CallbackAction::MarkRead { id });
         }
         if s.starts_with("unread:") {
-            let id = s.split(':').nth(1).ok_or("Missing ID")?.parse::<i64>().map_err(|e| e.to_string())?;
+            let id = s
+                .split(':')
+                .nth(1)
+                .ok_or("Missing ID")?
+                .parse::<i64>()
+                .map_err(|e| e.to_string())?;
             return Ok(CallbackAction::MarkUnread { id });
         }
         if s.starts_with("art_del:") {
-            let id = s.split(':').nth(1).ok_or("Missing ID")?.parse::<i64>().map_err(|e| e.to_string())?;
+            let id = s
+                .split(':')
+                .nth(1)
+                .ok_or("Missing ID")?
+                .parse::<i64>()
+                .map_err(|e| e.to_string())?;
             return Ok(CallbackAction::DeletePrompt { id });
         }
         if s.starts_with("art_del_conf:") {
-            let id = s.split(':').nth(1).ok_or("Missing ID")?.parse::<i64>().map_err(|e| e.to_string())?;
+            let id = s
+                .split(':')
+                .nth(1)
+                .ok_or("Missing ID")?
+                .parse::<i64>()
+                .map_err(|e| e.to_string())?;
             return Ok(CallbackAction::DeleteConfirm { id });
         }
         if s.starts_with("art_rate:") {
-            let id = s.split(':').nth(1).ok_or("Missing ID")?.parse::<i64>().map_err(|e| e.to_string())?;
+            let id = s
+                .split(':')
+                .nth(1)
+                .ok_or("Missing ID")?
+                .parse::<i64>()
+                .map_err(|e| e.to_string())?;
             return Ok(CallbackAction::RatePrompt { id });
         }
         if s.starts_with("rate_set:") {
@@ -126,23 +156,48 @@ impl FromStr for CallbackAction {
             }
         }
         if s.starts_with("art_comm:") {
-            let id = s.split(':').nth(1).ok_or("Missing ID")?.parse::<i64>().map_err(|e| e.to_string())?;
+            let id = s
+                .split(':')
+                .nth(1)
+                .ok_or("Missing ID")?
+                .parse::<i64>()
+                .map_err(|e| e.to_string())?;
             return Ok(CallbackAction::CommentMenu { id });
         }
         if s.starts_with("comm_set:") {
-            let id = s.split(':').nth(1).ok_or("Missing ID")?.parse::<i64>().map_err(|e| e.to_string())?;
+            let id = s
+                .split(':')
+                .nth(1)
+                .ok_or("Missing ID")?
+                .parse::<i64>()
+                .map_err(|e| e.to_string())?;
             return Ok(CallbackAction::CommentSetPrompt { id });
         }
         if s.starts_with("comm_del:") {
-            let id = s.split(':').nth(1).ok_or("Missing ID")?.parse::<i64>().map_err(|e| e.to_string())?;
+            let id = s
+                .split(':')
+                .nth(1)
+                .ok_or("Missing ID")?
+                .parse::<i64>()
+                .map_err(|e| e.to_string())?;
             return Ok(CallbackAction::CommentDelete { id });
         }
         if s.starts_with("art_tags:") {
-            let id = s.split(':').nth(1).ok_or("Missing ID")?.parse::<i64>().map_err(|e| e.to_string())?;
+            let id = s
+                .split(':')
+                .nth(1)
+                .ok_or("Missing ID")?
+                .parse::<i64>()
+                .map_err(|e| e.to_string())?;
             return Ok(CallbackAction::TagsMenu { id });
         }
         if s.starts_with("tag_add:") {
-            let id = s.split(':').nth(1).ok_or("Missing ID")?.parse::<i64>().map_err(|e| e.to_string())?;
+            let id = s
+                .split(':')
+                .nth(1)
+                .ok_or("Missing ID")?
+                .parse::<i64>()
+                .map_err(|e| e.to_string())?;
             return Ok(CallbackAction::TagAddPrompt { id });
         }
         if s.starts_with("tag_rem:") {
@@ -154,7 +209,12 @@ impl FromStr for CallbackAction {
             }
         }
         if s.starts_with("tags_list:") {
-            let page = s.split(':').nth(1).ok_or("Missing page")?.parse::<i64>().map_err(|e| e.to_string())?;
+            let page = s
+                .split(':')
+                .nth(1)
+                .ok_or("Missing page")?
+                .parse::<i64>()
+                .map_err(|e| e.to_string())?;
             return Ok(CallbackAction::TagsList { page });
         }
         if s.starts_with("stag:") {
@@ -198,7 +258,12 @@ impl FromStr for CallbackAction {
             return Ok(CallbackAction::SearchFilterDateSelect { date });
         }
         if s.starts_with("sf_run:") {
-            let page = s.split(':').nth(1).ok_or("Missing page")?.parse::<i64>().map_err(|e| e.to_string())?;
+            let page = s
+                .split(':')
+                .nth(1)
+                .ok_or("Missing page")?
+                .parse::<i64>()
+                .map_err(|e| e.to_string())?;
             return Ok(CallbackAction::SearchFilterRun { page });
         }
 

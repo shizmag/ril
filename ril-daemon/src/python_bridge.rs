@@ -431,22 +431,36 @@ impl PythonBridge {
                 let tag = args.get("tag").and_then(|v| v.as_str());
                 let limit = args.get("limit").and_then(|v| v.as_i64()).unwrap_or(10) as usize;
                 let offset = args.get("offset").and_then(|v| v.as_i64()).unwrap_or(0) as usize;
-                let rating = args.get("rating").and_then(|v| v.as_i64()).map(|r| r as i32);
-                let query = args.get("query").and_then(|v| v.as_str()).map(|q| q.to_lowercase());
+                let rating = args
+                    .get("rating")
+                    .and_then(|v| v.as_i64())
+                    .map(|r| r as i32);
+                let query = args
+                    .get("query")
+                    .and_then(|v| v.as_str())
+                    .map(|q| q.to_lowercase());
 
                 let mut matched = vec![];
                 for art in &state.articles {
                     if let Some(ref st) = status {
-                        if art.status != *st { continue; }
+                        if art.status != *st {
+                            continue;
+                        }
                     }
                     if let Some(ref tg) = tag {
-                        if !art.tags.contains(&tg.to_string()) { continue; }
+                        if !art.tags.contains(&tg.to_string()) {
+                            continue;
+                        }
                     }
                     if let Some(rt) = rating {
-                        if art.rating != Some(rt) { continue; }
+                        if art.rating != Some(rt) {
+                            continue;
+                        }
                     }
                     if let Some(ref q) = query {
-                        if !art.title.to_lowercase().contains(q) && !art.url.to_lowercase().contains(q) {
+                        if !art.title.to_lowercase().contains(q)
+                            && !art.url.to_lowercase().contains(q)
+                        {
                             continue;
                         }
                     }
@@ -507,15 +521,19 @@ impl PythonBridge {
                         *counts.entry(tag.clone()).or_insert(0) += 1;
                     }
                 }
-                let mut list: Vec<serde_json::Value> = counts.into_iter().map(|(tag, count)| {
-                    serde_json::json!({ "tag": tag, "count": count })
-                }).collect();
+                let mut list: Vec<serde_json::Value> = counts
+                    .into_iter()
+                    .map(|(tag, count)| serde_json::json!({ "tag": tag, "count": count }))
+                    .collect();
                 list.sort_by(|a, b| b["count"].as_i64().cmp(&a["count"].as_i64()));
                 serde_json::Value::Array(list)
             }
             "rate_article" => {
                 let id = args.get("article_id").and_then(|v| v.as_i64()).unwrap_or(0);
-                let rating = args.get("rating").and_then(|v| v.as_i64()).map(|r| r as i32);
+                let rating = args
+                    .get("rating")
+                    .and_then(|v| v.as_i64())
+                    .map(|r| r as i32);
                 let mut success = false;
                 for art in &mut state.articles {
                     if art.id == id {
@@ -528,7 +546,10 @@ impl PythonBridge {
             }
             "set_article_comment" => {
                 let id = args.get("article_id").and_then(|v| v.as_i64()).unwrap_or(0);
-                let comment = args.get("comment").and_then(|v| v.as_str()).map(|s| s.to_string());
+                let comment = args
+                    .get("comment")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
                 let mut success = false;
                 for art in &mut state.articles {
                     if art.id == id {
@@ -541,8 +562,10 @@ impl PythonBridge {
             }
             "get_extended_stats" => {
                 let mut base = serde_json::to_value(&state.stats).unwrap();
-                let no_tags_count = state.articles.iter().filter(|a| a.tags.is_empty()).count() as i64;
-                let no_rating_count = state.articles.iter().filter(|a| a.rating.is_none()).count() as i64;
+                let no_tags_count =
+                    state.articles.iter().filter(|a| a.tags.is_empty()).count() as i64;
+                let no_rating_count =
+                    state.articles.iter().filter(|a| a.rating.is_none()).count() as i64;
                 let rated: Vec<_> = state.articles.iter().filter_map(|a| a.rating).collect();
                 let avg_rating = if rated.is_empty() {
                     0.0
@@ -554,8 +577,14 @@ impl PythonBridge {
                 top_articles.truncate(5);
 
                 if let Some(obj) = base.as_object_mut() {
-                    obj.insert("no_tags_count".to_string(), serde_json::json!(no_tags_count));
-                    obj.insert("no_rating_count".to_string(), serde_json::json!(no_rating_count));
+                    obj.insert(
+                        "no_tags_count".to_string(),
+                        serde_json::json!(no_tags_count),
+                    );
+                    obj.insert(
+                        "no_rating_count".to_string(),
+                        serde_json::json!(no_rating_count),
+                    );
                     obj.insert("avg_rating".to_string(), serde_json::json!(avg_rating));
                     obj.insert("top_articles".to_string(), serde_json::json!(top_articles));
                 }
@@ -570,7 +599,8 @@ impl PythonBridge {
                         Some(stripped)
                     } else {
                         None
-                    }.map(|s| {
+                    }
+                    .map(|s| {
                         let part = s.split('/').next().unwrap_or(s);
                         if part.starts_with("www.") {
                             part[4..].to_string()
@@ -582,9 +612,10 @@ impl PythonBridge {
                         *domains.entry(h).or_insert(0) += 1;
                     }
                 }
-                let mut list: Vec<serde_json::Value> = domains.into_iter().map(|(domain, count)| {
-                    serde_json::json!({ "domain": domain, "count": count })
-                }).collect();
+                let mut list: Vec<serde_json::Value> = domains
+                    .into_iter()
+                    .map(|(domain, count)| serde_json::json!({ "domain": domain, "count": count }))
+                    .collect();
                 list.sort_by(|a, b| b["count"].as_i64().cmp(&a["count"].as_i64()));
                 serde_json::Value::Array(list)
             }
@@ -812,11 +843,17 @@ impl PythonBridge {
         struct Resp {
             success: bool,
         }
-        let res: Resp = self.call("rate_article", Args { article_id, rating }).await?;
+        let res: Resp = self
+            .call("rate_article", Args { article_id, rating })
+            .await?;
         Ok(res.success)
     }
 
-    pub async fn set_article_comment(&self, article_id: i64, comment: Option<String>) -> Result<bool> {
+    pub async fn set_article_comment(
+        &self,
+        article_id: i64,
+        comment: Option<String>,
+    ) -> Result<bool> {
         #[derive(Serialize)]
         struct Args {
             article_id: i64,
@@ -826,7 +863,15 @@ impl PythonBridge {
         struct Resp {
             success: bool,
         }
-        let res: Resp = self.call("set_article_comment", Args { article_id, comment }).await?;
+        let res: Resp = self
+            .call(
+                "set_article_comment",
+                Args {
+                    article_id,
+                    comment,
+                },
+            )
+            .await?;
         Ok(res.success)
     }
 

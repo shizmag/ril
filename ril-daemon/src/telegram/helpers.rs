@@ -29,7 +29,7 @@ pub fn calculate_pages(page: i64, total_count: i64, limit: i64) -> (i64, Option<
         return (0, None, None);
     }
     let total_pages = (total_count as f64 / limit as f64).ceil() as i64;
-    
+
     // Clamp page to valid range
     let current_page = if page < 0 {
         0
@@ -39,8 +39,16 @@ pub fn calculate_pages(page: i64, total_count: i64, limit: i64) -> (i64, Option<
         page
     };
 
-    let prev = if current_page > 0 { Some(current_page - 1) } else { None };
-    let next = if current_page + 1 < total_pages { Some(current_page + 1) } else { None };
+    let prev = if current_page > 0 {
+        Some(current_page - 1)
+    } else {
+        None
+    };
+    let next = if current_page + 1 < total_pages {
+        Some(current_page + 1)
+    } else {
+        None
+    };
 
     (total_pages, prev, next)
 }

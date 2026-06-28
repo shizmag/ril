@@ -407,3 +407,299 @@ def test_telegram_run_bot_no_token(mocker):
         telegram_bot.run_bot()
         mock_print.assert_any_call("Error: TELEGRAM_TOKEN environment variable is not set. Cannot start bot.")
 
+
+@pytest.mark.asyncio
+async def test_telegram_callback_list(mocker):
+    query = MagicMock()
+    query.from_user.id = 12345
+    query.data = "list"
+    query.answer = AsyncMock()
+    
+    update = MagicMock()
+    update.callback_query = query
+    context = MagicMock()
+    
+    mocker.patch("ril.telegram_bot.ALLOWED_TELEGRAM_USERS", [12345])
+    mock_show = mocker.patch("ril.telegram_bot.show_articles_list", new_callable=AsyncMock)
+    
+    await telegram_bot.callback_handler(update, context)
+    
+    query.answer.assert_called_once()
+    mock_show.assert_called_once_with(update, context, edit=True)
+
+
+@pytest.mark.asyncio
+async def test_telegram_callback_delete_this_msg(mocker):
+    query = MagicMock()
+    query.from_user.id = 12345
+    query.data = "delete_this_msg"
+    query.answer = AsyncMock()
+    query.message = AsyncMock()
+    
+    update = MagicMock()
+    update.callback_query = query
+    context = MagicMock()
+    
+    mocker.patch("ril.telegram_bot.ALLOWED_TELEGRAM_USERS", [12345])
+    
+    await telegram_bot.callback_handler(update, context)
+    
+    query.answer.assert_called_once()
+    query.message.delete.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_telegram_callback_art(mocker):
+    query = MagicMock()
+    query.from_user.id = 12345
+    query.data = "art:42"
+    query.answer = AsyncMock()
+    
+    update = MagicMock()
+    update.callback_query = query
+    context = MagicMock()
+    
+    mocker.patch("ril.telegram_bot.ALLOWED_TELEGRAM_USERS", [12345])
+    mock_show = mocker.patch("ril.telegram_bot.show_article_details", new_callable=AsyncMock)
+    
+    await telegram_bot.callback_handler(update, context)
+    
+    query.answer.assert_called_once()
+    mock_show.assert_called_once_with(update, context, 42)
+
+
+@pytest.mark.asyncio
+async def test_telegram_callback_get_success(mocker, setup_test_environment):
+    art_id = db.add_article("https://url.com", "Test Get Success", "/vault/test_get.md", 100, 500, "Content")
+    
+    query = MagicMock()
+    query.from_user.id = 12345
+    query.data = f"get:{art_id}"
+    query.answer = AsyncMock()
+    
+    update = MagicMock()
+    update.callback_query = query
+    update.effective_chat.id = 999
+    
+    context = MagicMock()
+    context.bot.send_document = AsyncMock()
+    
+    mocker.patch("ril.telegram_bot.ALLOWED_TELEGRAM_USERS", [12345])
+    mocker.patch("os.path.exists", return_value=True)
+    mocker.patch("builtins.open", mocker.mock_open(read_data="content"))
+    
+    await telegram_bot.callback_handler(update, context)
+    
+    query.answer.assert_called_once_with("📥 Отправляю файл...")
+    context.bot.send_document.assert_called_once()
+    caption = context.bot.send_document.call_args[1]["caption"]
+    assert "Test Get Success" in caption
+
+
+@pytest.mark.asyncio
+async def test_telegram_callback_get_file_not_found(mocker, setup_test_environment):
+    art_id = db.add_article("https://url.com", "Test Get Missing File", "/vault/missing.md", 100, 500, "Content")
+    
+    query = MagicMock()
+    query.from_user.id = 12345
+    query.data = f"get:{art_id}"
+    query.answer = AsyncMock()
+    
+    update = MagicMock()
+    update.callback_query = query
+    context = MagicMock()
+    
+    mocker.patch("ril.telegram_bot.ALLOWED_TELEGRAM_USERS", [12345])
+    mocker.patch("os.path.exists", return_value=False)
+    
+    await telegram_bot.callback_handler(update, context)
+    
+    query.answer.assert_called_once_with("❌ Файл не найден на диске.", show_alert=True)
+
+
+@pytest.mark.asyncio
+async def test_telegram_callback_get_not_found(mocker, setup_test_environment):
+    query = MagicMock()
+    query.from_user.id = 12345
+    query.data = "get:9999"
+    query.answer = AsyncMock()
+    
+    update = MagicMock()
+    update.callback_query = query
+    context = MagicMock()
+    
+    mocker.patch("ril.telegram_bot.ALLOWED_TELEGRAM_USERS", [12345])
+    
+    await telegram_bot.callback_handler(update, context)
+    
+    query.answer.assert_called_once_with("❌ Статья не найдена.", show_alert=True)
+
+
+@pytest.mark.asyncio
+async def test_telegram_callback_toggle_success(mocker, setup_test_environment):
+    art_id = db.add_article("https://url.com", "Test Toggle", "/vault/toggle.md", 100, 500, "Content")
+    
+    query = MagicMock()
+    query.from_user.id = 12345
+    query.data = f"toggle:{art_id}"
+    query.answer = AsyncMock()
+    
+    update = MagicMock()
+    update.callback_query = query
+    context = MagicMock()
+    
+    mocker.patch("ril.telegram_bot.ALLOWED_TELEGRAM_USERS", [12345])
+    mock_show = mocker.patch("ril.telegram_bot.show_article_details", new_callable=AsyncMock)
+    
+    article = db.get_article(art_id)
+    assert article['status'] == 'unread'
+    
+    await telegram_bot.callback_handler(update, context)
+    
+    query.answer.assert_called_once_with("Статус изменен на: Прочитано")
+    article_after = db.get_article(art_id)
+    assert article_after['status'] == 'read'
+    mock_show.assert_called_once_with(update, context, art_id)
+
+
+@pytest.mark.asyncio
+async def test_telegram_callback_toggle_not_found(mocker, setup_test_environment):
+    query = MagicMock()
+    query.from_user.id = 12345
+    query.data = "toggle:9999"
+    query.answer = AsyncMock()
+    
+    update = MagicMock()
+    update.callback_query = query
+    context = MagicMock()
+    
+    mocker.patch("ril.telegram_bot.ALLOWED_TELEGRAM_USERS", [12345])
+    
+    await telegram_bot.callback_handler(update, context)
+    
+    query.answer.assert_called_once_with("❌ Статья не найдена.", show_alert=True)
+
+
+@pytest.mark.asyncio
+async def test_telegram_callback_toggle_doc_success(mocker, setup_test_environment):
+    art_id = db.add_article("https://url.com", "Test Toggle Doc", "/vault/toggle_doc.md", 100, 500, "Content")
+    
+    query = MagicMock()
+    query.from_user.id = 12345
+    query.data = f"toggle_doc:{art_id}"
+    query.answer = AsyncMock()
+    query.edit_message_caption = AsyncMock()
+    
+    update = MagicMock()
+    update.callback_query = query
+    context = MagicMock()
+    
+    mocker.patch("ril.telegram_bot.ALLOWED_TELEGRAM_USERS", [12345])
+    
+    await telegram_bot.callback_handler(update, context)
+    
+    query.answer.assert_called_once_with("Статус: Прочитано")
+    query.edit_message_caption.assert_called_once()
+    caption = query.edit_message_caption.call_args[1]["caption"]
+    assert "✅" in caption
+    assert "Test Toggle Doc" in caption
+
+
+@pytest.mark.asyncio
+async def test_telegram_callback_rate_doc_success(mocker, setup_test_environment):
+    art_id = db.add_article("https://url.com", "Test Rate Doc", "/vault/rate_doc.md", 100, 500, "Content")
+    
+    query = MagicMock()
+    query.from_user.id = 12345
+    query.data = f"rate_doc:{art_id}:5"
+    query.answer = AsyncMock()
+    query.edit_message_caption = AsyncMock()
+    
+    update = MagicMock()
+    update.callback_query = query
+    context = MagicMock()
+    
+    mocker.patch("ril.telegram_bot.ALLOWED_TELEGRAM_USERS", [12345])
+    
+    article = db.get_article(art_id)
+    assert article.get('rating') is None
+    
+    await telegram_bot.callback_handler(update, context)
+    
+    query.answer.assert_called_once_with("Оценка ⭐⭐⭐⭐⭐ успешно установлена!", show_alert=True)
+    article_after = db.get_article(art_id)
+    assert article_after['rating'] == 5
+    
+    query.edit_message_caption.assert_called_once()
+    caption = query.edit_message_caption.call_args[1]["caption"]
+    assert "⭐ Оценка: ⭐⭐⭐⭐⭐" in caption
+
+
+@pytest.mark.asyncio
+async def test_telegram_callback_del_confirm(mocker, setup_test_environment):
+    art_id = db.add_article("https://url.com", "Test Del Confirm", "/vault/del_confirm.md", 100, 500, "Content")
+    
+    query = MagicMock()
+    query.from_user.id = 12345
+    query.data = f"del_confirm:{art_id}"
+    query.answer = AsyncMock()
+    
+    update = MagicMock()
+    update.callback_query = query
+    context = MagicMock()
+    
+    mocker.patch("ril.telegram_bot.ALLOWED_TELEGRAM_USERS", [12345])
+    mock_show = mocker.patch("ril.telegram_bot.show_delete_confirmation", new_callable=AsyncMock)
+    
+    await telegram_bot.callback_handler(update, context)
+    
+    query.answer.assert_called_once()
+    mock_show.assert_called_once_with(update, context, art_id)
+
+
+@pytest.mark.asyncio
+async def test_telegram_callback_del_exe_success(mocker, setup_test_environment):
+    art_id = db.add_article("https://url.com", "Test Del Exe", "/vault/del_exe.md", 100, 500, "Content")
+    
+    query = MagicMock()
+    query.from_user.id = 12345
+    query.data = f"del_exe:{art_id}"
+    query.answer = AsyncMock()
+    
+    update = MagicMock()
+    update.callback_query = query
+    context = MagicMock()
+    
+    mocker.patch("ril.telegram_bot.ALLOWED_TELEGRAM_USERS", [12345])
+    mocker.patch("ril.core.delete_article", return_value=True)
+    mock_show = mocker.patch("ril.telegram_bot.show_articles_list", new_callable=AsyncMock)
+    
+    await telegram_bot.callback_handler(update, context)
+    
+    query.answer.assert_called_once_with("🗑️ Удалено: Test Del Exe", show_alert=False)
+    mock_show.assert_called_once_with(update, context, edit=True)
+
+
+@pytest.mark.asyncio
+async def test_telegram_callback_del_doc_success(mocker, setup_test_environment):
+    art_id = db.add_article("https://url.com", "Test Del Doc", "/vault/del_doc.md", 100, 500, "Content")
+    
+    query = MagicMock()
+    query.from_user.id = 12345
+    query.data = f"del_doc:{art_id}"
+    query.answer = AsyncMock()
+    query.delete_message = AsyncMock()
+    
+    update = MagicMock()
+    update.callback_query = query
+    context = MagicMock()
+    
+    mocker.patch("ril.telegram_bot.ALLOWED_TELEGRAM_USERS", [12345])
+    mocker.patch("ril.core.delete_article", return_value=True)
+    
+    await telegram_bot.callback_handler(update, context)
+    
+    query.answer.assert_called_once_with("🗑️ Удалено: Test Del Doc")
+    query.delete_message.assert_called_once()
+
+

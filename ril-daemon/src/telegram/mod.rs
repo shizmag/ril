@@ -1,18 +1,18 @@
-pub mod handlers;
-pub mod callbacks;
-pub mod keyboards;
-pub mod views;
-pub mod state;
 pub mod callback_data;
+pub mod callbacks;
+pub mod handlers;
 pub mod helpers;
+pub mod keyboards;
+pub mod state;
+pub mod views;
 
 use crate::config::Config;
 use crate::domain::SaveFormat;
 use crate::python_bridge::PythonBridge;
+pub use state::BotState;
 use std::sync::Arc;
 use teloxide::prelude::*;
 use teloxide::utils::command::BotCommands;
-pub use state::BotState;
 
 #[derive(BotCommands, Clone, Debug)]
 #[command(

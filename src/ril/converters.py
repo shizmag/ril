@@ -67,29 +67,35 @@ class BaseConverter(ABC):
                 }
                 if referer:
                     # Unquote first to prevent double encoding
-                    referer = unquote(referer)
-                    if '%' in referer:
-                        referer = unquote(referer)
                     headers["Referer"] = quote(referer, safe=':/?#[]@!$&\'()*+,;=')
 
-                await asyncio.sleep(0.15)
                 retries = 3
                 backoff = 0.5
                 response = None
 
                 for attempt in range(retries):
-                    response = await client.get(url, headers=headers)
-                    if response.status_code == 429:
-                        retry_after = response.headers.get("Retry-After")
-                        try:
-                            delay = float(retry_after) if retry_after else backoff
-                        except ValueError:
-                            delay = backoff
-                        logger.warning(f"Rate limited (429) for image {url}. Retrying in {delay}s...")
-                        await asyncio.sleep(delay)
+                    try:
+                        response = await client.get(url, headers=headers)
+                        if response.status_code == 429:
+                            retry_after = response.headers.get("Retry-After")
+                            try:
+                                delay = float(retry_after) if retry_after else backoff
+                            except ValueError:
+                                delay = backoff
+                            logger.warning(f"Rate limited (429) for image {url}. Retrying in {delay}s...")
+                            await asyncio.sleep(delay)
+                            backoff *= 2
+                            continue
+                        response.raise_for_status()
+                        break
+                    except Exception as e:
+                        if isinstance(e, asyncio.CancelledError):
+                            raise e
+                        if attempt == retries - 1:
+                            raise e
+                        logger.warning(f"Error downloading image {url} (attempt {attempt + 1}/{retries}): {e}. Retrying in {backoff}s...")
+                        await asyncio.sleep(backoff)
                         backoff *= 2
-                        continue
-                    break
 
                 if not response:
                     raise Exception("No response received from image server")
@@ -870,7 +876,7 @@ class MarkdownConverter(BaseConverter):
         semaphore = asyncio.Semaphore(3)
         image_refs = {}
         
-        async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
+        async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
             for idx, img in enumerate(img_tags):
                 src = extract_real_image_src(img)
                 if not src:
@@ -1007,7 +1013,7 @@ class HTMLConverter(BaseConverter):
         img_rewrites = []
         semaphore = asyncio.Semaphore(3)
 
-        async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
+        async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
             for img in img_tags:
                 src = extract_real_image_src(img)
                 if not src:
@@ -1435,7 +1441,7 @@ class EPUBConverter(BaseConverter):
         images_to_pack = []  # list of (epub_path, bytes, mime_type)
         semaphore = asyncio.Semaphore(3)
         
-        async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
+        async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
             download_tasks = []
             img_rewrites = []
             

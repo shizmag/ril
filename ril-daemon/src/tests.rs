@@ -61,9 +61,12 @@ async fn test_mock_bridge_get_stats() {
 #[tokio::test]
 async fn test_mock_bridge_lifecycle() {
     let bridge = PythonBridge::new_mock();
-    
+
     // Add article
-    let res = bridge.process_url("http://example.com/test", SaveFormat::Html).await.unwrap();
+    let res = bridge
+        .process_url("http://example.com/test", SaveFormat::Html)
+        .await
+        .unwrap();
     assert_eq!(res.id, 2);
     assert_eq!(res.url, "http://example.com/test");
 
@@ -96,18 +99,23 @@ async fn test_mock_bridge_lifecycle() {
 async fn test_real_bridge_e2e() {
     let mut config = Config::load_from_env_only().unwrap();
     // Explicitly configure path to python workspace root for subprocess execution
-    config.python_workdir = Some(std::path::PathBuf::from("/Users/vladimirkasterin/python/ril"));
-    
+    config.python_workdir = Some(std::path::PathBuf::from(
+        "/Users/vladimirkasterin/python/ril",
+    ));
+
     let bridge = PythonBridge::new(config);
     let stats_res = bridge.get_reading_stats().await;
-    
+
     match stats_res {
         Ok(stats) => {
             assert!(stats.total_articles >= 0);
             assert!(stats.total_words >= 0);
         }
         Err(e) => {
-            panic!("E2E integration test failed to call Python subprocess: {:?}", e);
+            panic!(
+                "E2E integration test failed to call Python subprocess: {:?}",
+                e
+            );
         }
     }
 }
@@ -116,7 +124,10 @@ async fn test_real_bridge_e2e() {
 fn test_telegram_helpers() {
     let text = "Check out this: https://google.com and http://example.org/path?query=1";
     let urls = crate::telegram::extract_urls(text);
-    assert_eq!(urls, vec!["https://google.com", "http://example.org/path?query=1"]);
+    assert_eq!(
+        urls,
+        vec!["https://google.com", "http://example.org/path?query=1"]
+    );
 
     let text_no_url = "No url here, just text.";
     assert!(crate::telegram::extract_urls(text_no_url).is_empty());
@@ -154,14 +165,18 @@ async fn test_mcp_tool_calls_mock() {
         "url": "https://rust-lang.org",
         "format": "markdown"
     });
-    let res = crate::mcp::handle_tool_call(&bridge, "process_url", &args).await.unwrap();
+    let res = crate::mcp::handle_tool_call(&bridge, "process_url", &args)
+        .await
+        .unwrap();
     assert_eq!(res["isError"].as_bool(), Some(false));
     let text = res["content"][0]["text"].as_str().unwrap();
     assert!(text.contains("rust-lang.org"));
     assert!(text.contains("Mock Article"));
 
     // 2. get_reading_stats
-    let res = crate::mcp::handle_tool_call(&bridge, "get_reading_stats", &serde_json::Value::Null).await.unwrap();
+    let res = crate::mcp::handle_tool_call(&bridge, "get_reading_stats", &serde_json::Value::Null)
+        .await
+        .unwrap();
     assert_eq!(res["isError"].as_bool(), Some(false));
     let text = res["content"][0]["text"].as_str().unwrap();
     assert!(text.contains("total_articles"));
@@ -171,36 +186,50 @@ async fn test_mcp_tool_calls_mock() {
         "status": "unread",
         "limit": 10
     });
-    let res = crate::mcp::handle_tool_call(&bridge, "list_articles", &args).await.unwrap();
+    let res = crate::mcp::handle_tool_call(&bridge, "list_articles", &args)
+        .await
+        .unwrap();
     assert_eq!(res["isError"].as_bool(), Some(false));
 
     // 4. search_articles
     let args = serde_json::json!({
         "query": "rust"
     });
-    let res = crate::mcp::handle_tool_call(&bridge, "search_articles", &args).await.unwrap();
+    let res = crate::mcp::handle_tool_call(&bridge, "search_articles", &args)
+        .await
+        .unwrap();
     assert_eq!(res["isError"].as_bool(), Some(false));
 
     // 5. mark_article_read & unread
     let args = serde_json::json!({ "article_id": 1 });
-    let res = crate::mcp::handle_tool_call(&bridge, "mark_article_read", &args).await.unwrap();
+    let res = crate::mcp::handle_tool_call(&bridge, "mark_article_read", &args)
+        .await
+        .unwrap();
     assert_eq!(res["isError"].as_bool(), Some(false));
-    
-    let res = crate::mcp::handle_tool_call(&bridge, "mark_article_unread", &args).await.unwrap();
+
+    let res = crate::mcp::handle_tool_call(&bridge, "mark_article_unread", &args)
+        .await
+        .unwrap();
     assert_eq!(res["isError"].as_bool(), Some(false));
 
     // 6. get_article_content
     let args = serde_json::json!({ "article_id": 1 });
-    let res = crate::mcp::handle_tool_call(&bridge, "get_article_content", &args).await.unwrap();
+    let res = crate::mcp::handle_tool_call(&bridge, "get_article_content", &args)
+        .await
+        .unwrap();
     assert_eq!(res["isError"].as_bool(), Some(false));
 
     // 7. delete_article
     let args = serde_json::json!({ "article_id": 1 });
-    let res = crate::mcp::handle_tool_call(&bridge, "delete_article", &args).await.unwrap();
+    let res = crate::mcp::handle_tool_call(&bridge, "delete_article", &args)
+        .await
+        .unwrap();
     assert_eq!(res["isError"].as_bool(), Some(false));
 
     // 8. reset_library
-    let res = crate::mcp::handle_tool_call(&bridge, "reset_library", &serde_json::Value::Null).await.unwrap();
+    let res = crate::mcp::handle_tool_call(&bridge, "reset_library", &serde_json::Value::Null)
+        .await
+        .unwrap();
     assert_eq!(res["isError"].as_bool(), Some(false));
 }
 
@@ -210,25 +239,56 @@ fn test_detect_format_override() {
     use crate::telegram::detect_format_override;
 
     // Default formatting when no overrides
-    assert_eq!(detect_format_override("https://example.com/some/path", SaveFormat::Markdown), SaveFormat::Markdown);
-    assert_eq!(detect_format_override("Check this link: https://google.com", SaveFormat::Epub), SaveFormat::Epub);
+    assert_eq!(
+        detect_format_override("https://example.com/some/path", SaveFormat::Markdown),
+        SaveFormat::Markdown
+    );
+    assert_eq!(
+        detect_format_override("Check this link: https://google.com", SaveFormat::Epub),
+        SaveFormat::Epub
+    );
 
     // Overrides
-    assert_eq!(detect_format_override("https://example.com html", SaveFormat::Markdown), SaveFormat::Html);
-    assert_eq!(detect_format_override("https://example.com/page epub", SaveFormat::Markdown), SaveFormat::Epub);
-    assert_eq!(detect_format_override("https://example.com/page markdown", SaveFormat::Html), SaveFormat::Markdown);
-    assert_eq!(detect_format_override("https://example.com/page md", SaveFormat::Html), SaveFormat::Markdown);
+    assert_eq!(
+        detect_format_override("https://example.com html", SaveFormat::Markdown),
+        SaveFormat::Html
+    );
+    assert_eq!(
+        detect_format_override("https://example.com/page epub", SaveFormat::Markdown),
+        SaveFormat::Epub
+    );
+    assert_eq!(
+        detect_format_override("https://example.com/page markdown", SaveFormat::Html),
+        SaveFormat::Markdown
+    );
+    assert_eq!(
+        detect_format_override("https://example.com/page md", SaveFormat::Html),
+        SaveFormat::Markdown
+    );
 
     // Mixed case overrides
-    assert_eq!(detect_format_override("https://example.com HTML", SaveFormat::Markdown), SaveFormat::Html);
-    assert_eq!(detect_format_override("https://example.com/page EPUB", SaveFormat::Markdown), SaveFormat::Epub);
-    assert_eq!(detect_format_override("https://example.com/page Markdown", SaveFormat::Html), SaveFormat::Markdown);
+    assert_eq!(
+        detect_format_override("https://example.com HTML", SaveFormat::Markdown),
+        SaveFormat::Html
+    );
+    assert_eq!(
+        detect_format_override("https://example.com/page EPUB", SaveFormat::Markdown),
+        SaveFormat::Epub
+    );
+    assert_eq!(
+        detect_format_override("https://example.com/page Markdown", SaveFormat::Html),
+        SaveFormat::Markdown
+    );
 }
 
 #[test]
 fn test_id_extraction() {
     let parse_id = |s: &str| -> Option<i64> {
-        s.split_whitespace().next().unwrap_or("").parse::<i64>().ok()
+        s.split_whitespace()
+            .next()
+            .unwrap_or("")
+            .parse::<i64>()
+            .ok()
     };
 
     assert_eq!(parse_id("5"), Some(5));
