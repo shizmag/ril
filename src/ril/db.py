@@ -4,6 +4,50 @@ from pathlib import Path
 from typing import List, Dict, Any, Optional
 from ril import config
 
+_nlp = None
+
+def get_nlp():
+    global _nlp
+    if _nlp is None:
+        import spacy
+        try:
+            _nlp = spacy.load("en_core_web_sm", disable=["parser", "ner"])
+        except OSError:
+            from spacy.cli import download
+            download("en_core_web_sm")
+            _nlp = spacy.load("en_core_web_sm", disable=["parser", "ner"])
+    return _nlp
+
+def lemmatize_text(text: str) -> str:
+    """Lemmatize English text using spaCy en_core_web_sm."""
+    if not text:
+        return text
+    try:
+        nlp = get_nlp()
+        doc = nlp(text)
+        lemmas = [t.lemma_ + t.whitespace_ for t in doc]
+        return "".join(lemmas)
+    except Exception:
+        return text
+
+def lemmatize_query(query: str) -> str:
+    """Lemmatize the search query while preserving FTS5 boolean operators and syntax."""
+    if not query:
+        return query
+    try:
+        nlp = get_nlp()
+        doc = nlp(query)
+        lemmas = []
+        for token in doc:
+            if token.text in ("AND", "OR", "NOT", "NEAR"):
+                lemmas.append(token.text + token.whitespace_)
+            else:
+                lemmas.append(token.lemma_ + token.whitespace_)
+        return "".join(lemmas)
+    except Exception:
+        return query
+
+
 def get_db_connection() -> sqlite3.Connection:
     """Establish a connection to the SQLite database."""
     conn = sqlite3.connect(config.DB_PATH)
@@ -94,11 +138,15 @@ def add_article(
         import re
         fts_content = re.sub(r'(?m)^\[img_ref_\d+\].*$', '', content)
         
+        # Lemmatize title and content for better FTS5 matching
+        lemmatized_title = lemmatize_text(title)
+        lemmatized_content = lemmatize_text(fts_content)
+        
         # Insert into FTS5
         cursor.execute("""
             INSERT INTO articles_fts (article_id, title, content)
             VALUES (?, ?, ?)
-        """, (article_id, title, fts_content))
+        """, (article_id, lemmatized_title, lemmatized_content))
         
         conn.commit()
         return article_id
@@ -181,6 +229,8 @@ def search_articles(query: str, limit: int = 10) -> List[Dict[str, Any]]:
     Search articles matching the search query using SQLite FTS5.
     Returns matching metadata and relevant text snippets.
     """
+    lemmatized_query = lemmatize_query(query)
+    
     with get_db_connection() as conn:
         cursor = conn.cursor()
         try:
@@ -201,12 +251,13 @@ def search_articles(query: str, limit: int = 10) -> List[Dict[str, Any]]:
                 WHERE articles_fts MATCH ?
                 ORDER BY rank
                 LIMIT ?
-            """, (query, limit))
+            """, (lemmatized_query, limit))
             return [dict(row) for row in cursor.fetchall()]
         except sqlite3.OperationalError:
             # If the query contains special character syntax that FTS5 fails to parse, 
             # we escape it by surrounding words with quotes or falling back to simple search.
             safe_query = f'"{query.replace('"', ' ')}"'
+            lemmatized_safe_query = lemmatize_query(safe_query)
             try:
                 cursor.execute("""
                     SELECT 
@@ -223,7 +274,7 @@ def search_articles(query: str, limit: int = 10) -> List[Dict[str, Any]]:
                     WHERE articles_fts MATCH ?
                     ORDER BY rank
                     LIMIT ?
-                """, (safe_query, limit))
+                """, (lemmatized_safe_query, limit))
                 return [dict(row) for row in cursor.fetchall()]
             except sqlite3.OperationalError:
                 # Fallback to simple LIKE search if FTS5 query fails completely

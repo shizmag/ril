@@ -15,6 +15,7 @@ dependencies = [
     "python-telegram-bot>=21.0",
     "python-dotenv>=1.0.1",
     "pillow>=12.2.0",
+    "spacy>=3.8.14",
 ]
 
 [project.scripts]

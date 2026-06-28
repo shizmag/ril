@@ -20,6 +20,155 @@ async def trigger_lazy_loading(page) -> None:
         logger.warning(f"Error triggering lazy loading: {e}")
 
 
+async def dismiss_cookie_consent(page) -> None:
+    """
+    Attempt to click 'Accept All', 'Agree', or 'OK' buttons on cookie consent banners
+    to allow the main content of the page to load/render correctly.
+    """
+    accept_texts = [
+        "Accept All", "Accept all", "Accept", "Agree", "I agree", 
+        "Allow All", "Allow all", "Allow", "OK", "I accept", 
+        "Принять всё", "Принять", "Согласен", "Разрешить всё", "Разрешить",
+        "Yes, I agree", "Yes, agree", "Accept Cookies", "Accept cookies"
+    ]
+    
+    common_selectors = [
+        "#onetrust-accept-btn-handler",
+        ".onetrust-close-btn-handler",
+        "#didomi-notice-agree-button",
+        "#CybotCookiebotDialogBodyLevelButtonLevelOptinAllowAll",
+        "#CybotCookiebotDialogBodyLevelButtonLevelOptinAllowall",
+        "#cookie-accept",
+        ".cookie-accept",
+        "[class*='accept-button']",
+        "[id*='accept-button']",
+        ".js-accept-cookies",
+        "#js-accept-cookies"
+    ]
+    
+    try:
+        # 1. Try to click specific common selectors first
+        for selector in common_selectors:
+            locator = page.locator(selector)
+            try:
+                count = await locator.count()
+                if not isinstance(count, int):
+                    count = 0
+            except Exception:
+                count = 0
+
+            if count > 0:
+                element = locator.first
+                try:
+                    visible = await element.is_visible()
+                    if not isinstance(visible, bool):
+                        visible = False
+                except Exception:
+                    visible = False
+
+                if visible:
+                    logger.info(f"Clicking cookie consent button by selector: {selector}")
+                    await element.click()
+                    await asyncio.sleep(0.5)
+                    return
+                    
+        # 2. Try to find buttons/links by text
+        for text in accept_texts:
+            locator = page.locator(f"button:has-text('{text}'), a:has-text('{text}')")
+            try:
+                count = await locator.count()
+                if not isinstance(count, int):
+                    count = 0
+            except Exception:
+                count = 0
+
+            if count > 0:
+                for i in range(count):
+                    loc = locator.nth(i)
+                    try:
+                        visible = await loc.is_visible()
+                        if not isinstance(visible, bool):
+                            visible = False
+                    except Exception:
+                        visible = False
+
+                    if visible:
+                        logger.info(f"Clicking cookie consent button with text: '{text}'")
+                        await loc.click()
+                        await asyncio.sleep(0.5)
+                        return
+    except Exception as e:
+        logger.debug(f"Error attempting to dismiss cookie consent: {e}")
+
+
+async def intercept_route(route):
+    """Intercept network requests and block known CMP, analytics, and cookie consent domains."""
+    url = route.request.url.lower()
+    block_patterns = [
+        "onetrust.com", "cookiebot.com", "didomi.io", "quantcast.mgr.consensu.org",
+        "secureserver.net", "trustarc.com", "consentmanager", "iab-tcf",
+        "consensu.org", "evidon.com", "usercentrics.com", "cookiechoices",
+        "cookiebanner", "cc.exoclick.com", "optanon", "privacy-notice",
+        "cookie-law-info", "cookie-consent", "gdpr-consent"
+    ]
+    if any(pattern in url for pattern in block_patterns):
+        logger.info(f"Blocked cookie/CMP network request: {url}")
+        try:
+            await route.abort()
+        except Exception:
+            pass
+    else:
+        try:
+            await route.continue_()
+        except Exception:
+            pass
+
+
+async def restore_scrolling_and_hide_overlays(page) -> None:
+    """Inject CSS to hide any overlays/consent modals and restore body scrollability."""
+    style_content = """
+    #onetrust-consent-sdk, #onetrust-banner-sdk, .onetrust-pc-dark,
+    #didomi-host, .didomi-popup, .didomi-consent-popup,
+    #CybotCookiebotDialog, #cookiebot,
+    #qc-cmp2-container, #qc-cmp2-ui,
+    #consent_blackbar, #truste-consent-track,
+    .cookie-consent, .cookieconsent, .cc-window, .cc-banner, .cc-type-info,
+    #cookie-law-info-bar, #cookie-law-info-again,
+    #sp-consent-container, .cookie-notice-container, .cookie-notice,
+    #gdpr-consent-tool-wrapper, #gdpr-consent-banner,
+    .cookie-banner, .cookie-popup, .cookie-dialog, .cookie-bar, .cookiebar,
+    #privacy-consent, #cookie-consent-banner, .js-cookie-consent,
+    [id*="consent-wall"], [class*="consent-wall"],
+    [id*="cookie-wall"], [class*="cookie-wall"],
+    .consent-dialog, .cookie-dialog, [role="dialog"], [role="alertdialog"],
+    .modal, .modal-backdrop, .overlay, .popup-backdrop {
+        display: none !important;
+        visibility: hidden !important;
+        opacity: 0 !important;
+        pointer-events: none !important;
+        height: 0 !important;
+        width: 0 !important;
+    }
+    
+    html, body {
+        overflow: auto !important;
+        overflow-y: auto !important;
+        position: static !important;
+        max-height: none !important;
+        height: auto !important;
+        user-select: auto !important;
+    }
+    """
+    try:
+        await page.evaluate(f"""
+            const style = document.createElement('style');
+            style.innerHTML = `{style_content}`;
+            document.head.appendChild(style);
+        """)
+    except Exception as e:
+        logger.debug(f"Failed to inject scroll restoration styles: {e}")
+
+
 async def fetch_html(
     url: str,
     headless: bool = CRAWLER_HEADLESS,
@@ -50,6 +199,12 @@ async def fetch_html(
         
         page = await context.new_page()
         
+        # Block cookie consent banners & tracker scripts at the network level
+        try:
+            await page.route("**/*", intercept_route)
+        except Exception:
+            pass
+        
         # Apply stealth scripts to prevent detection as a automation tool
         if stealth:
             stealth_obj = Stealth()
@@ -64,6 +219,12 @@ async def fetch_html(
                 logger.warning(f"Timeout or error waiting for networkidle, trying load: {e}")
                 await page.goto(url, timeout=timeout_ms, wait_until="load")
                 
+            # Dismiss cookie consent overlays if present (clicks any remaining buttons)
+            await dismiss_cookie_consent(page)
+            
+            # Force restore scrolling and hide overlays via CSS injection
+            await restore_scrolling_and_hide_overlays(page)
+            
             # Trigger lazy loading of images
             await trigger_lazy_loading(page)
             

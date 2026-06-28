@@ -475,6 +475,44 @@ def test_image_optimization_transparency():
     assert mime_transparent == "image/png"  # Kept as PNG because of transparency!
 
 
+@pytest.mark.asyncio
+async def test_cookie_consent_removal(setup_test_environment):
+    converter = MarkdownConverter()
+    
+    html = (
+        "<html>"
+        "<body>"
+        "<div id='onetrust-consent-sdk'>"
+        "  <p>We use cookies to improve your experience.</p>"
+        "  <button>Accept All</button>"
+        "</div>"
+        "<div class='didomi-popup'>"
+        "  <p>Privacy choices and vendors list...</p>"
+        "</div>"
+        "<div role='dialog' aria-label='cookie settings'>"
+        "  <p>Vendor details and preferences.</p>"
+        "</div>"
+        "<article>"
+        "  <h1>Real Article Title</h1>"
+        "  <p>This is the actual article content that should be preserved.</p>"
+        "</article>"
+        "</body>"
+        "</html>"
+    )
+    
+    result = await converter.convert(html, "https://example.com", "test-consent-removal")
+    
+    # Assert that actual content is kept
+    assert "Real Article Title" in result
+    assert "This is the actual article content that should be preserved." in result
+    
+    # Assert that cookie consent text is stripped
+    assert "improve your experience" not in result
+    assert "Privacy choices and vendors list" not in result
+    assert "Vendor details and preferences" not in result
+
+
+
 
 
 

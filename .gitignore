@@ -11,4 +11,11 @@ wheels/
 library/*
 .env
 .codegraph/*
-./src/library/*
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+*.db-journal
+*.db-wal
+*.db-shm

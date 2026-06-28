@@ -445,6 +445,28 @@ def preprocess_html(html: str) -> str:
     for tag in soup.find_all(["script", "style", "meta", "noscript", "svg"]):
         tag.decompose()
         
+    # 1.1 Strip cookie consent banners / CMP overlays (e.g. OneTrust, Didomi, Cookiebot, etc.)
+    consent_selectors = [
+        '#onetrust-consent-sdk', '#onetrust-banner-sdk', '.onetrust-pc-dark',
+        '#didomi-host', '.didomi-popup', '.didomi-consent-popup',
+        '#CybotCookiebotDialog', '#cookiebot',
+        '#qc-cmp2-container', '#qc-cmp2-ui',
+        '#consent_blackbar', '#truste-consent-track',
+        '.cookie-consent', '.cookieconsent', '.cc-window', '.cc-banner', '.cc-type-info',
+        '#cookie-law-info-bar', '#cookie-law-info-again',
+        '#sp-consent-container', '.cookie-notice-container', '.cookie-notice',
+        '#gdpr-consent-tool-wrapper', '#gdpr-consent-banner',
+        '.cookie-banner', '.cookie-popup', '.cookie-dialog', '.cookie-bar', '.cookiebar',
+        '#privacy-consent', '#cookie-consent-banner', '.js-cookie-consent',
+        '[role="dialog"][aria-label*="cookie" i]', '[role="dialog"][aria-label*="consent" i]',
+        '[role="dialog"][aria-labelledby*="cookie" i]', '[role="dialog"][aria-labelledby*="consent" i]',
+        '[role="alertdialog"][aria-label*="cookie" i]', '[role="alertdialog"][aria-label*="consent" i]',
+        '[role="alertdialog"][aria-labelledby*="cookie" i]', '[role="alertdialog"][aria-labelledby*="consent" i]'
+    ]
+    for selector in consent_selectors:
+        for tag in soup.select(selector):
+            tag.decompose()
+        
     # 2. Clean links and remove tracking params
     for a in soup.find_all("a"):
         href = a.get("href")

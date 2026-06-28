@@ -185,3 +185,33 @@ def test_delete_article():
     # Try deleting again
     success_retry = db.delete_article(art_id)
     assert not success_retry
+
+
+def test_search_articles_lemmatization():
+    # Insert article with inflections
+    db.add_article(
+        url="https://example.com/NLP-test",
+        title="Python Crawling Adventures",
+        file_path="/path/nlp.md",
+        word_count=50,
+        char_count=200,
+        content="We were running towards the crawling insects while they jumped."
+    )
+    
+    # 1. Search singular form for plural in content ("insect" -> "insects")
+    res1 = db.search_articles("insect")
+    assert len(res1) == 1
+    assert res1[0]["title"] == "Python Crawling Adventures"
+    
+    # 2. Search base verb form for past tense ("jump" -> "jumped")
+    res2 = db.search_articles("jump")
+    assert len(res2) == 1
+    
+    # 3. Search different verb inflection ("run" -> "running")
+    res3 = db.search_articles("run")
+    assert len(res3) == 1
+    
+    # 4. Search query with boolean operator ("run AND crawling")
+    res4 = db.search_articles("run AND crawling")
+    assert len(res4) == 1
+
