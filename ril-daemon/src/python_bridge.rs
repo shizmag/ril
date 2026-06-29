@@ -297,7 +297,28 @@ impl PythonBridge {
                     .get("format")
                     .and_then(|v| v.as_str())
                     .unwrap_or("markdown");
-                let id = (state.articles.len() + 1) as i64;
+                let force = args
+                    .get("force")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+
+                if !force {
+                    if let Some(existing) = state.articles.iter().find(|a| a.url == url) {
+                        return Err(DaemonError::BridgePython {
+                            code: "PROCESSING_FAILED".to_string(),
+                            message: format!("URL already exists in library (ID: {})", existing.id),
+                            details: "".to_string(),
+                        });
+                    }
+                }
+
+                let mut id = (state.articles.len() + 1) as i64;
+                if let Some(existing) = state.articles.iter().find(|a| a.url == url) {
+                    id = existing.id;
+                }
+                
+                state.articles.retain(|a| a.url != url);
+
                 let title = format!("Mock Article {}", id);
                 let file_path = format!("/mock/library/{}.{}", id, fmt);
                 let summary = ArticleSummary {
@@ -676,17 +697,19 @@ impl PythonBridge {
     }
 
     // Direct methods for easier usage:
-    pub async fn process_url(&self, url: &str, format: SaveFormat) -> Result<ProcessingResult> {
+    pub async fn process_url(&self, url: &str, format: SaveFormat, force: bool) -> Result<ProcessingResult> {
         #[derive(Serialize)]
         struct Args<'a> {
             url: &'a str,
             format: &'a str,
+            force: bool,
         }
         self.call(
             "process_url",
             Args {
                 url,
                 format: &format.to_string(),
+                force,
             },
         )
         .await

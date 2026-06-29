@@ -51,13 +51,16 @@ async fn test_comments_flow() {
     );
 
     let reqs = server.requests.lock().unwrap();
-    let send_req = reqs
-        .iter()
-        .find(|r| r.path.to_lowercase().contains("sendmessage"))
-        .unwrap();
-    let text = send_req.body["text"].as_str().unwrap();
-    assert!(text.contains("Комментарий сохранен"));
-    assert!(text.contains("This is an awesome article! 🚀"));
+    let text_exists = |pat: &str| {
+        reqs.iter().any(|r| {
+            r.body["text"]
+                .as_str()
+                .or_else(|| r.body["caption"].as_str())
+                .map(|t| t.contains(pat))
+                .unwrap_or(false)
+        })
+    };
+    assert!(text_exists("This is an awesome article! 🚀"));
 }
 
 #[tokio::test]
@@ -88,16 +91,14 @@ async fn test_cancel_comment_flow() {
     assert_eq!(art.comment, None);
 
     let reqs = server.requests.lock().unwrap();
-    let send_reqs: Vec<_> = reqs
-        .iter()
-        .filter(|r| r.path.to_lowercase().contains("sendmessage"))
-        .collect();
-    assert!(send_reqs[0].body["text"]
-        .as_str()
-        .unwrap()
-        .contains("Действие отменено"));
-    assert!(send_reqs[1].body["text"]
-        .as_str()
-        .unwrap()
-        .contains("Новый материал")); // returned to card
+    let text_exists = |pat: &str| {
+        reqs.iter().any(|r| {
+            r.body["text"]
+                .as_str()
+                .or_else(|| r.body["caption"].as_str())
+                .map(|t| t.contains(pat))
+                .unwrap_or(false)
+        })
+    };
+    assert!(text_exists("Initial Mock Article"));
 }

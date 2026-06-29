@@ -110,9 +110,11 @@ fn test_render_articles_list() {
     let rendered = render_articles_list(&list, "My List", 0, 2);
     assert!(rendered.contains("My List"));
     assert!(rendered.contains("Страница 1 из 2"));
-    assert!(rendered.contains("📖 <b>[1]</b> A"));
-    assert!(rendered.contains("✅ <b>[2]</b> B"));
-    assert!(rendered.contains("⭐⭐⭐⭐⭐"));
+    assert!(rendered.contains("<b>1. A</b>"));
+    assert!(rendered.contains("<b>2. B</b>"));
+    assert!(rendered.contains("📖 непрочитано"));
+    assert!(rendered.contains("✅ прочитано"));
+    assert!(rendered.contains("⭐ 5"));
 
     // Empty list
     let rendered_empty = render_articles_list(&[], "Empty", 0, 0);

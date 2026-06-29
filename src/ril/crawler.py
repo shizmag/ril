@@ -74,7 +74,16 @@ async def dismiss_cookie_consent(page) -> None:
                     
         # 2. Try to find buttons/links by text
         for text in accept_texts:
-            locator = page.locator(f"button:has-text('{text}'), a:has-text('{text}')")
+            locator = page.locator(
+                f"button:has-text('{text}'), "
+                f"[role='button']:has-text('{text}'), "
+                f"a[class*='btn']:has-text('{text}'), "
+                f"a[class*='button']:has-text('{text}'), "
+                f"a[id*='btn']:has-text('{text}'), "
+                f"a[id*='button']:has-text('{text}'), "
+                f"a[class*='cookie']:has-text('{text}'), "
+                f"a[class*='consent']:has-text('{text}')"
+            )
             try:
                 count = await locator.count()
                 if not isinstance(count, int):

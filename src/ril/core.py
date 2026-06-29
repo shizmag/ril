@@ -54,7 +54,8 @@ def download_pdf(url: str) -> Path:
 
 async def process_url(
     url: str,
-    converter: Optional[BaseConverter] = None
+    converter: Optional[BaseConverter] = None,
+    force: bool = False
 ) -> Dict[str, Any]:
     """
     Run the full Read It Later pipeline for a URL.
@@ -64,6 +65,11 @@ async def process_url(
     3. Save Markdown/images locally
     4. Save metadata and index for Search in SQLite
     """
+    if not force:
+        existing = db.get_article_by_url(url)
+        if existing:
+            raise ValueError(f"URL already exists in library (ID: {existing['id']})")
+
     if not converter:
         converter = MarkdownConverter()
         

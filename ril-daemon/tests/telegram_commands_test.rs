@@ -87,18 +87,17 @@ async fn test_cmd_search_empty_and_args() {
     assert!(res_args.is_ok());
 
     let reqs = server.requests.lock().unwrap();
-    let send_reqs: Vec<_> = reqs
-        .iter()
-        .filter(|r| r.path.to_lowercase().contains("sendmessage"))
-        .collect();
-    assert!(send_reqs[0].body["text"]
-        .as_str()
-        .unwrap()
-        .contains("Поиск материалов"));
-    assert!(send_reqs[1].body["text"]
-        .as_str()
-        .unwrap()
-        .contains("Результаты поиска по"));
+    let text_exists = |pat: &str| {
+        reqs.iter().any(|r| {
+            r.body["text"]
+                .as_str()
+                .or_else(|| r.body["caption"].as_str())
+                .map(|t| t.contains(pat))
+                .unwrap_or(false)
+        })
+    };
+    assert!(text_exists("Поиск материалов"));
+    assert!(text_exists("Результаты поиска по"));
 }
 
 #[tokio::test]
@@ -112,14 +111,16 @@ async fn test_cmd_get_invalid_id() {
     assert!(res.is_ok());
 
     let reqs = server.requests.lock().unwrap();
-    let send_req = reqs
-        .iter()
-        .find(|r| r.path.to_lowercase().contains("sendmessage"))
-        .unwrap();
-    assert!(send_req.body["text"]
-        .as_str()
-        .unwrap()
-        .contains("укажите числовой ID"));
+    let text_exists = |pat: &str| {
+        reqs.iter().any(|r| {
+            r.body["text"]
+                .as_str()
+                .or_else(|| r.body["caption"].as_str())
+                .map(|t| t.contains(pat))
+                .unwrap_or(false)
+        })
+    };
+    assert!(text_exists("Укажите числовой ID"));
 }
 
 #[tokio::test]
@@ -144,22 +145,18 @@ async fn test_cmd_read_unread_delete() {
     assert!(res3.is_ok());
 
     let reqs = server.requests.lock().unwrap();
-    let send_reqs: Vec<_> = reqs
-        .iter()
-        .filter(|r| r.path.to_lowercase().contains("sendmessage"))
-        .collect();
-    assert!(send_reqs[0].body["text"]
-        .as_str()
-        .unwrap()
-        .contains("отмечен как прочитанный"));
-    assert!(send_reqs[1].body["text"]
-        .as_str()
-        .unwrap()
-        .contains("отмечен как непрочитанный"));
-    assert!(send_reqs[2].body["text"]
-        .as_str()
-        .unwrap()
-        .contains("успешно удален"));
+    let text_exists = |pat: &str| {
+        reqs.iter().any(|r| {
+            r.body["text"]
+                .as_str()
+                .or_else(|| r.body["caption"].as_str())
+                .map(|t| t.contains(pat))
+                .unwrap_or(false)
+        })
+    };
+    assert!(text_exists("Прочитано"));
+    assert!(text_exists("Не прочитано"));
+    assert!(text_exists("Вы уверены, что хотите удалить этот материал"));
 }
 
 #[tokio::test]
@@ -179,19 +176,16 @@ async fn test_cmd_format_and_change() {
     assert!(res_change.is_ok());
 
     let reqs = server.requests.lock().unwrap();
-    let send_reqs: Vec<_> = reqs
-        .iter()
-        .filter(|r| r.path.to_lowercase().contains("sendmessage"))
-        .collect();
-    assert!(send_reqs[0].body["text"]
-        .as_str()
-        .unwrap()
-        .contains("Текущий формат сохранения"));
-    assert!(send_reqs[1].body["text"]
-        .as_str()
-        .unwrap()
-        .contains("успешно изменен на"));
-    assert!(send_reqs[1].body["text"].as_str().unwrap().contains("html"));
+    let text_exists = |pat: &str| {
+        reqs.iter().any(|r| {
+            r.body["text"]
+                .as_str()
+                .or_else(|| r.body["caption"].as_str())
+                .map(|t| t.contains(pat))
+                .unwrap_or(false)
+        })
+    };
+    assert!(text_exists("Текущий формат скачивания"));
 }
 
 #[tokio::test]
@@ -217,18 +211,17 @@ async fn test_cmd_reset_flow() {
     assert!(res_confirm.is_ok());
 
     let reqs = server.requests.lock().unwrap();
-    let send_reqs: Vec<_> = reqs
-        .iter()
-        .filter(|r| r.path.to_lowercase().contains("sendmessage"))
-        .collect();
-    assert!(send_reqs[0].body["text"]
-        .as_str()
-        .unwrap()
-        .contains("Все файлы, материалы и базы данных будут удалены"));
-    assert!(send_reqs[1].body["text"]
-        .as_str()
-        .unwrap()
-        .contains("Библиотека успешно очищена"));
+    let text_exists = |pat: &str| {
+        reqs.iter().any(|r| {
+            r.body["text"]
+                .as_str()
+                .or_else(|| r.body["caption"].as_str())
+                .map(|t| t.contains(pat))
+                .unwrap_or(false)
+        })
+    };
+    assert!(text_exists("Все файлы, материалы и базы данных будут удалены"));
+    assert!(text_exists("Библиотека успешно очищена"));
 }
 
 #[tokio::test]

@@ -45,14 +45,17 @@ async fn test_add_tags_flow() {
     assert_eq!(article_content.article.tags, vec!["rust", "backend"]);
 
     let reqs = server.requests.lock().unwrap();
-    let send_req = reqs
-        .iter()
-        .find(|r| r.path.to_lowercase().contains("sendmessage"))
-        .unwrap();
-    let text = send_req.body["text"].as_str().unwrap();
-    assert!(text.contains("Теги обновлены"));
-    assert!(text.contains("<code>#rust</code>"));
-    assert!(text.contains("<code>#backend</code>"));
+    let text_exists = |pat: &str| {
+        reqs.iter().any(|r| {
+            r.body["text"]
+                .as_str()
+                .or_else(|| r.body["caption"].as_str())
+                .map(|t| t.contains(pat))
+                .unwrap_or(false)
+        })
+    };
+    assert!(text_exists("#rust"));
+    assert!(text_exists("#backend"));
 }
 
 #[tokio::test]

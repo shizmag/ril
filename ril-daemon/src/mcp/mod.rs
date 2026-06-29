@@ -115,8 +115,12 @@ pub(crate) async fn handle_tool_call(
                 .and_then(|v| v.as_str())
                 .unwrap_or("markdown");
             let format = fmt_str.parse::<SaveFormat>()?;
+            let force = arguments
+                .get("force")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
             let res = bridge
-                .process_url(url, format)
+                .process_url(url, format, force)
                 .await
                 .map_err(|e| e.to_string())?;
             Ok(json!({

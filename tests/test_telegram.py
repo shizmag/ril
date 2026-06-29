@@ -139,7 +139,7 @@ async def test_telegram_handle_message(mocker, setup_test_environment):
     
     await telegram_bot.handle_message(update2, context2)
     
-    mock_process.assert_called_once_with("https://agents.ai/future", converter=mocker.ANY)
+    mock_process.assert_called_once_with("https://agents.ai/future", converter=mocker.ANY, force=False)
     update2.message.delete.assert_called_once()
     context2.bot.delete_message.assert_called_once_with(chat_id=update2.effective_chat.id, message_id=999)
     # The last reply_text call should be the fallback warning
@@ -377,8 +377,8 @@ async def test_telegram_handle_message_multiple_urls(mocker, setup_test_environm
     await telegram_bot.handle_message(update, context)
     
     assert mock_process.call_count == 2
-    mock_process.assert_any_call("https://link1.com/art1", converter=mocker.ANY)
-    mock_process.assert_any_call("https://link2.com/art2", converter=mocker.ANY)
+    mock_process.assert_any_call("https://link1.com/art1", converter=mocker.ANY, force=False)
+    mock_process.assert_any_call("https://link2.com/art2", converter=mocker.ANY, force=False)
     assert context.bot.delete_message.call_count == 2
 
 def test_telegram_run_bot(mocker):

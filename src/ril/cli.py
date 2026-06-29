@@ -16,7 +16,7 @@ def handle_add(args):
             converter = EPUBConverter()
         else:
             converter = MarkdownConverter()
-        result = asyncio.run(core.process_url(args.url, converter=converter))
+        result = asyncio.run(core.process_url(args.url, converter=converter, force=args.force))
         print("Success!")
         print(f"Title:     {result['title']}")
         print(f"Words:     {result['word_count']}")
@@ -198,6 +198,7 @@ def main():
     parser_add = subparsers.add_parser("add", help="Add a webpage to the library")
     parser_add.add_argument("url", help="URL of the page to scrape")
     parser_add.add_argument("--format", choices=["markdown", "html", "epub"], default="markdown", help="Format to save the article (default: markdown)")
+    parser_add.add_argument("-f", "--force", action="store_true", help="Force update if URL already exists")
     
     # search command
     parser_search = subparsers.add_parser("search", help="Search article content with FTS5")

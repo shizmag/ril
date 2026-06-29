@@ -14,6 +14,10 @@ pub fn get_tools_list() -> Value {
                             "type": "string",
                             "enum": ["markdown", "html", "epub"],
                             "description": "Format to save (default: markdown)"
+                        },
+                        "force": {
+                            "type": "boolean",
+                            "description": "Force update if URL already exists"
                         }
                     },
                     "required": ["url"]

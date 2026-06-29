@@ -267,3 +267,34 @@ async def test_process_url_pdf_disabled_images(mocker, monkeypatch, setup_test_e
         assert "img_ref_0" not in content
         assert "data:image/jpeg;base64," not in content
 
+
+@pytest.mark.asyncio
+async def test_process_url_duplicate_check(mocker, setup_test_environment):
+    library_dir = setup_test_environment["library_dir"]
+    
+    # Mock crawler HTML fetching
+    mocker.patch("ril.core.fetch_html", new_callable=AsyncMock, return_value="<html>Raw HTML</html>")
+    
+    # Mock readability cleaning
+    mocker.patch("ril.core.extract_article", return_value=("Duplicate Title", "<div>Content</div>"))
+    
+    # Mock converter
+    mock_convert = AsyncMock(return_value="# Duplicate Title\n\nContent.")
+    mocker.patch("ril.converters.MarkdownConverter.convert", mock_convert)
+    
+    # First time processing should succeed
+    url = "https://example.com/duplicate-test"
+    res1 = await core.process_url(url)
+    assert res1["title"] == "Duplicate Title"
+    
+    # Second time processing without force should raise ValueError
+    with pytest.raises(ValueError) as excinfo:
+        await core.process_url(url)
+    assert "already exists in library" in str(excinfo.value)
+    
+    # Second time processing with force should succeed
+    res2 = await core.process_url(url, force=True)
+    assert res2["title"] == "Duplicate Title"
+    assert res2["id"] == res1["id"]
+
+

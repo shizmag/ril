@@ -672,14 +672,34 @@ async def _import_single_url(
     converter,
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
-    semaphore: asyncio.Semaphore
+    semaphore: asyncio.Semaphore,
+    force: bool = False
 ):
     """Worker to import a single URL with concurrency control."""
     async with semaphore:
+        if not force:
+            existing = db.get_article_by_url(url)
+            if existing:
+                keyboard = InlineKeyboardMarkup([
+                    [
+                        InlineKeyboardButton("🔄 Обновить", callback_data=f"force_upd:{existing['id']}:{fmt}"),
+                        InlineKeyboardButton("📥 Скачать", callback_data=f"get:{existing['id']}"),
+                        InlineKeyboardButton("🗑️ Закрыть", callback_data="delete_this_msg")
+                    ]
+                ])
+                await update.message.reply_text(
+                    f"⚠️ Статья уже сохранена в библиотеке (ID: {existing['id']}):\n"
+                    f"*{existing['title']}*\n\n"
+                    f"Хотите обновить её или скачать существующий файл?",
+                    reply_markup=keyboard,
+                    parse_mode="Markdown"
+                )
+                return
+
         status_msg = await update.message.reply_text(f"⏳ Начинаю импорт ({fmt.upper()}): {url}...")
         try:
             # Process URL through core pipeline
-            res = await core.process_url(url, converter=converter)
+            res = await core.process_url(url, converter=converter, force=force)
             
             # Form response
             title = res['title']
@@ -778,10 +798,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception:
         pass
 
+    force = any(w in text_lower for w in ("force", "update", "обновить"))
+
     # Process links concurrently with a limit of 3 concurrent chromium/download instances
     semaphore = asyncio.Semaphore(3)
     tasks = [
-        _import_single_url(url, fmt, converter, update, context, semaphore)
+        _import_single_url(url, fmt, converter, update, context, semaphore, force=force)
         for url in urls
     ]
     await asyncio.gather(*tasks)
@@ -944,6 +966,77 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 pass
         else:
             await query.answer("❌ Не удалось удалить.", show_alert=True)
+            
+    elif data.startswith("force_upd:"):
+        parts = data.split(":")
+        art_id = int(parts[1])
+        fmt = parts[2]
+        article = db.get_article(art_id)
+        if article:
+            await query.answer("🔄 Запускаю обновление статьи...")
+            from ril.converters import MarkdownConverter, HTMLConverter, EPUBConverter
+            if fmt == "html":
+                converter = HTMLConverter()
+            elif fmt == "epub":
+                converter = EPUBConverter()
+            else:
+                converter = MarkdownConverter()
+            
+            # Edit the message text to show loading status
+            await query.edit_message_text(f"⏳ Обновляю статью: {article['url']}...")
+            
+            try:
+                res = await core.process_url(article['url'], converter=converter, force=True)
+                
+                title = res['title']
+                word_count = res['word_count']
+                file_path = res['file_path']
+                article_id = res['id']
+                
+                read_time = max(1, round(word_count / 200))
+                response_text = (
+                    f"📥 *Обновил!*\n\n"
+                    f"*{title}*\n"
+                    f"Слов: {word_count} (*~{read_time} мин. чтения*)\n"
+                    f"ID статьи: `{article_id}`\n"
+                    f"🔗 {article['url']}"
+                )
+                
+                # Delete the loading message
+                try:
+                    await query.message.delete()
+                except Exception:
+                    pass
+                
+                keyboard = get_document_keyboard(article_id, "unread")
+                if os.path.exists(file_path):
+                    with open(file_path, 'rb') as doc_file:
+                        await context.bot.send_document(
+                            chat_id=update.effective_chat.id,
+                            document=doc_file,
+                            filename=os.path.basename(file_path),
+                            caption=response_text,
+                            reply_markup=keyboard,
+                            parse_mode="Markdown"
+                        )
+                else:
+                    await context.bot.send_message(
+                        chat_id=update.effective_chat.id,
+                        text=f"⚠️ Файл не найден на диске, но сохранен в базе:\n{response_text}",
+                        parse_mode="Markdown"
+                    )
+            except Exception as e:
+                logger.error(f"Error force updating {article['url']}: {e}", exc_info=True)
+                await query.edit_message_text(
+                    f"❌ Ошибка при обновлении ссылки: {article['url']}\n"
+                    f"Детали: `{str(e)}`",
+                    reply_markup=InlineKeyboardMarkup([[
+                        InlineKeyboardButton("🗑️ Закрыть", callback_data="delete_this_msg")
+                    ]]),
+                    parse_mode="Markdown"
+                )
+        else:
+            await query.answer("❌ Статья не найдена.", show_alert=True)
             
     elif data.startswith("set_format:"):
         fmt = data.split(":")[1]

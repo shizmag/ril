@@ -12,6 +12,13 @@ def extract_article(html_content: str) -> tuple[str, str]:
         tuple[title, cleaned_html]
     """
     try:
+        if html_content:
+            soup = BeautifulSoup(html_content, "lxml")
+            # Unwrap spoiler content wrappers to prevent readability from stripping their contents (e.g. on Habr)
+            for tag in soup.find_all(class_=re.compile(r"spoiler__content|splr-content")):
+                tag.unwrap()
+            html_content = str(soup)
+            
         # Document parses the html and determines the core content area
         doc = Document(html_content)
         raw_title = doc.title()

@@ -64,11 +64,26 @@ async fn test_mock_bridge_lifecycle() {
 
     // Add article
     let res = bridge
-        .process_url("http://example.com/test", SaveFormat::Html)
+        .process_url("http://example.com/test", SaveFormat::Html, false)
         .await
         .unwrap();
     assert_eq!(res.id, 2);
     assert_eq!(res.url, "http://example.com/test");
+
+    // Adding duplicate without force should fail
+    let dup_res = bridge
+        .process_url("http://example.com/test", SaveFormat::Html, false)
+        .await;
+    assert!(dup_res.is_err());
+    let err_str = dup_res.unwrap_err().to_string();
+    assert!(err_str.contains("URL already exists in library"));
+
+    // Adding duplicate with force should succeed
+    let force_res = bridge
+        .process_url("http://example.com/test", SaveFormat::Html, true)
+        .await
+        .unwrap();
+    assert_eq!(force_res.id, 2);
 
     // Check stats
     let stats = bridge.get_reading_stats().await.unwrap();

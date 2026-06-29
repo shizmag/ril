@@ -21,7 +21,7 @@ async fn test_stats_lifecycle() {
     // 2. Add an article with 300 words
     state
         .bridge
-        .process_url("http://example.com/2", SaveFormat::Html)
+        .process_url("http://example.com/2", SaveFormat::Html, false)
         .await
         .unwrap();
 

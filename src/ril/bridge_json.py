@@ -8,6 +8,7 @@ from ril.converters import MarkdownConverter, HTMLConverter, EPUBConverter
 async def handle_process_url(args):
     url = args.get("url")
     fmt = args.get("format", "markdown")
+    force = bool(args.get("force", False))
     if fmt == "html":
         converter = HTMLConverter()
     elif fmt == "epub":
@@ -15,7 +16,7 @@ async def handle_process_url(args):
     else:
         converter = MarkdownConverter()
     
-    result = await core.process_url(url, converter=converter)
+    result = await core.process_url(url, converter=converter, force=force)
     return result
 
 async def handle_search_articles(args):

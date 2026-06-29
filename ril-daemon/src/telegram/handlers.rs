@@ -405,8 +405,9 @@ pub async fn handle_urls(
         *map.get(&user.id).unwrap_or(&state.config.default_format)
     };
     let text = msg.text().unwrap_or("");
+    let text_lower = text.to_lowercase();
+    let force = text_lower.contains("force") || text_lower.contains("update") || text_lower.contains("обновить");
     let import_format = super::detect_format_override(text, default_fmt);
-
     let chat_id = msg.chat.id;
 
     // Show initial status screen in the state message
@@ -424,7 +425,7 @@ pub async fn handle_urls(
 
         let handle = tokio::spawn(async move {
             let _permit = sem.acquire().await.unwrap();
-            bridge.process_url(&url, import_format).await
+            bridge.process_url(&url, import_format, force).await
         });
         join_handles.push(handle);
     }

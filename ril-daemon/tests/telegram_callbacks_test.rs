@@ -87,6 +87,7 @@ async fn test_callback_routing_hub() {
     let server = MockTelegramServer::start().await;
     let bot = setup_bot(server.port);
     let state = make_mock_state();
+    state.set_hub_message(teloxide::types::UserId(123), 789).await;
 
     let query = make_callback_query("hub", 123, 456);
     let res = handle_callback_query(bot, query, state).await;

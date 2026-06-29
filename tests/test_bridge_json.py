@@ -153,3 +153,31 @@ async def test_bridge_search_list_delete_reset(setup_test_environment, capsys, m
     res = json.loads(captured.out)
     assert res["ok"] is True
     assert res["data"]["success"] is True
+
+
+@pytest.mark.asyncio
+async def test_bridge_process_url_with_force(mocker, setup_test_environment, capsys):
+    mock_process = mocker.patch(
+        "ril.core.process_url",
+        new_callable=AsyncMock,
+        return_value={
+            "id": 42,
+            "url": "https://example.com",
+            "title": "Quantum",
+            "file_path": "/mock.md",
+            "word_count": 100,
+            "char_count": 500,
+            "status": "unread"
+        }
+    )
+    payload = json.dumps({
+        "command": "process_url",
+        "args": {"url": "https://example.com", "format": "markdown", "force": True}
+    })
+    with patch("sys.stdin", io.StringIO(payload)):
+        await main()
+    captured = capsys.readouterr()
+    res = json.loads(captured.out)
+    assert res["ok"] is True
+    mock_process.assert_called_once_with("https://example.com", converter=mocker.ANY, force=True)
+
