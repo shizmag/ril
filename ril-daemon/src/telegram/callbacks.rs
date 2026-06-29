@@ -95,11 +95,15 @@ pub async fn handle_callback_query_inner(
                         }
                     );
                     let markup = keyboards::document_keyboard(id, &export_res.status);
-                    bot.send_document(msg.chat.id, doc)
+                    if let Some(state_msg_id) = state.clear_state_message(user.id).await {
+                        let _ = bot.delete_message(msg.chat.id, teloxide::types::MessageId(state_msg_id)).await;
+                    }
+                    let sent = bot.send_document(msg.chat.id, doc)
                         .caption(caption)
                         .reply_markup(markup)
                         .parse_mode(teloxide::types::ParseMode::Html)
                         .await?;
+                    state.set_state_message(user.id, sent.id.0).await;
                 } else {
                     super::helpers::show_error_state(bot.clone(), msg.chat.id, state.clone(), user.id, "Файл не найден на диске.").await?;
                 }
@@ -162,6 +166,7 @@ pub async fn handle_callback_query_inner(
         if let Ok(res) = state.bridge.delete_article(id).await {
             if res {
                 let _ = bot.delete_message(msg.chat.id, msg.id).await;
+                state.clear_state_message(user.id).await;
             }
         }
     } else if data.starts_with("rate_doc:") {
@@ -364,6 +369,34 @@ pub async fn handle_callback_query_inner(
             custom_ack = Some(format!("Формат скачивания изменен на {}", fmt.to_string().to_uppercase()));
         }
         super::helpers::show_settings_screen(bot.clone(), msg.chat.id, state.clone(), user.id).await?;
+    } else if data == "open_last_imported" {
+        let ids = state.get_last_imported(user.id).await;
+        let mut articles = vec![];
+        for id in ids {
+            if let Ok(content) = state.bridge.get_article_content(id).await {
+                articles.push(content.article);
+            }
+        }
+        let text = views::render_articles_list(
+            &articles,
+            "Последние добавленные материалы",
+            0,
+            1,
+        );
+        let markup = keyboards::articles_list_keyboard(&articles, None, None, "hub");
+        super::helpers::show_state_screen(bot.clone(), msg.chat.id, state.clone(), user.id, text, Some(markup)).await?;
+    } else if data == "show_import_errors" {
+        let errs = state.get_last_errors(user.id).await;
+        let mut text = "⚠️ <b>Ошибки при последнем импорте:</b>\n\n".to_string();
+        if errs.is_empty() {
+            text.push_str("Ошибок не обнаружено.");
+        } else {
+            for (i, err) in errs.iter().enumerate() {
+                text.push_str(&format!("{}. {}\n", i + 1, views::escape_html(err)));
+            }
+        }
+        let markup = keyboards::back_to_hub_keyboard();
+        super::helpers::show_state_screen(bot.clone(), msg.chat.id, state.clone(), user.id, text, Some(markup)).await?;
     } else if data == "reset_lib_prompt" {
         let text = "⚠️ <b>ВНИМАНИЕ!</b>\n\nЭто действие безвозвратно удалит ВСЕ сохраненные материалы, файлы и записи в базе данных.\n\nВы уверены?";
         let markup = keyboards::reset_lib_confirm_keyboard();

@@ -117,7 +117,7 @@ impl MockTelegramServer {
                             });
                             let response_str = serde_json::to_string(&response_json).unwrap();
                             let http_response = format!(
-                                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{}",
                                 response_str.len(),
                                 response_str
                             );

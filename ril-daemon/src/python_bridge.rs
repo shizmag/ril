@@ -53,7 +53,10 @@ impl MockState {
             title: "Initial Mock Article".to_string(),
             added_at: "2026-06-28T12:00:00".to_string(),
             status: "unread".to_string(),
-            file_path: "/mock/library/1.md".to_string(),
+            file_path: std::env::temp_dir()
+                .join("1.md")
+                .to_string_lossy()
+                .to_string(),
             word_count: 500,
             char_count: 3000,
             rating: None,
@@ -320,7 +323,10 @@ impl PythonBridge {
                 state.articles.retain(|a| a.url != url);
 
                 let title = format!("Mock Article {}", id);
-                let file_path = format!("/mock/library/{}.{}", id, fmt);
+                let file_path = std::env::temp_dir()
+                    .join(format!("{}.{}", id, fmt))
+                    .to_string_lossy()
+                    .to_string();
                 let summary = ArticleSummary {
                     id,
                     url: url.to_string(),
@@ -456,7 +462,10 @@ impl PythonBridge {
                         "article_id": art.id,
                         "title": art.title,
                         "format": format,
-                        "file_path": format!("/mock/library/{}.{}", art.id, format),
+                        "file_path": std::env::temp_dir()
+                            .join(format!("{}.{}", art.id, format))
+                            .to_string_lossy()
+                            .to_string(),
                         "filename": format!("{}.{}", art.id, format),
                         "word_count": art.word_count,
                         "status": art.status,

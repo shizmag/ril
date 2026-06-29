@@ -70,6 +70,10 @@ pub fn document_keyboard(art_id: i64, status: &str) -> InlineKeyboardMarkup {
             InlineKeyboardButton::callback("⭐ 4", format!("rate_doc:{}:4", art_id)),
             InlineKeyboardButton::callback("⭐ 5", format!("rate_doc:{}:5", art_id)),
         ],
+        vec![InlineKeyboardButton::callback(
+            "🔙 Назад к материалу",
+            format!("art:{}", art_id),
+        )],
     ])
 }
 

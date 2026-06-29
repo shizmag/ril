@@ -266,11 +266,15 @@ pub async fn handle_command(
                             }
                         );
                         let markup = keyboards::document_keyboard(id, &export_res.status);
-                        bot.send_document(msg.chat.id, doc)
+                        if let Some(state_msg_id) = state.clear_state_message(user.id).await {
+                            let _ = bot.delete_message(msg.chat.id, teloxide::types::MessageId(state_msg_id)).await;
+                        }
+                        let sent = bot.send_document(msg.chat.id, doc)
                             .caption(caption)
                             .reply_markup(markup)
                             .parse_mode(teloxide::types::ParseMode::Html)
                             .await?;
+                        state.set_state_message(user.id, sent.id.0).await;
                     } else {
                         super::helpers::show_error_state(bot, msg.chat.id, state, user.id, "Файл не найден на диске.").await?;
                     }
