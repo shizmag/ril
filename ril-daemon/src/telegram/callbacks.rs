@@ -2,7 +2,7 @@ use crate::telegram::state::{BotState, PendingState};
 use crate::telegram::{keyboards, views, MapTgError};
 use std::sync::Arc;
 use teloxide::prelude::*;
-use teloxide::types::{InlineKeyboardButton, InlineKeyboardMarkup, InputFile, Message};
+use teloxide::types::{InlineKeyboardButton, InlineKeyboardMarkup, InputFile, Message, UserId};
 
 pub async fn handle_callback_query(
     bot: Bot,
@@ -50,17 +50,16 @@ pub async fn handle_callback_query_inner(
         }
     };
 
-    // Acknowledge the callback query to stop the loading spinner
-    let _ = bot.answer_callback_query(q.id).await;
+    let mut custom_ack = None;
 
     if data == "hub" {
-        show_hub(bot, msg, state).await?;
+        super::helpers::show_hub(bot.clone(), msg.chat.id, state.clone(), user.id).await?;
     } else if data.starts_with("list:") {
         let parts: Vec<&str> = data.split(':').collect();
         if parts.len() == 3 {
             let status = parts[1];
             let page: i64 = parts[2].parse().unwrap_or(0);
-            show_list(bot, msg, status, page, state).await?;
+            super::helpers::show_articles_list_screen(bot.clone(), msg.chat.id, state.clone(), user.id, status, page).await?;
         }
     } else if data.starts_with("get_file:") {
         let id: i64 = data
@@ -68,53 +67,45 @@ pub async fn handle_callback_query_inner(
             .nth(1)
             .and_then(|s| s.parse().ok())
             .unwrap_or(0);
-        match state.bridge.get_article_content(id).await.tg_err() {
-            Ok(res) => {
-                let file_path = std::path::Path::new(&res.article.file_path);
+        let user_format = {
+            let map = state.user_formats.lock().await;
+            *map.get(&user.id).unwrap_or(&state.config.default_format)
+        };
+        match state.bridge.export_article(id, user_format).await.tg_err() {
+            Ok(export_res) => {
+                let file_path = std::path::Path::new(&export_res.file_path);
                 if file_path.exists() {
                     let doc = InputFile::file(file_path);
-                    let read_time = (res.article.word_count as f64 / 200.0).ceil() as i64;
-                    let rating_stars = match res.article.rating {
-                        Some(r) => "⭐".repeat(r as usize),
-                        None => "нет оценки".to_string(),
-                    };
-                    let status_emoji = if res.article.status == "read" { "✅" } else { "📖" };
-                    let status_text = if res.article.status == "read" { "Прочитано" } else { "Не прочитано" };
                     let caption = format!(
-                        "📄 <b>{}</b>\n\n\
+                        "📥 <b>{} [{}]</b>\n\n\
+                         <b>Формат:</b> {}\n\
                          <b>Слов:</b> {} (~{} мин. чтения)\n\
                          <b>Статус:</b> {} {}\n\
-                         <b>Оценка:</b> {}\n\
-                         <b>ID:</b> <code>{}</code>",
-                        views::escape_html(&res.article.title),
-                        res.article.word_count,
-                        read_time,
-                        status_emoji,
-                        status_text,
-                        rating_stars,
-                        res.article.id
+                         <b>Оценка:</b> {}",
+                        views::escape_html(&export_res.title),
+                        export_res.article_id,
+                        export_res.format.to_uppercase(),
+                        export_res.word_count,
+                        (export_res.word_count as f64 / 200.0).ceil() as i64,
+                        if export_res.status == "read" { "✅" } else { "📖" },
+                        if export_res.status == "read" { "Прочитано" } else { "Не прочитано" },
+                        match export_res.rating {
+                            Some(r) => "⭐".repeat(r as usize),
+                            None => "нет оценки".to_string(),
+                        }
                     );
-                    let markup = keyboards::document_keyboard(id, &res.article.status);
+                    let markup = keyboards::document_keyboard(id, &export_res.status);
                     bot.send_document(msg.chat.id, doc)
                         .caption(caption)
                         .reply_markup(markup)
                         .parse_mode(teloxide::types::ParseMode::Html)
                         .await?;
-                } else if !res.content.is_empty() {
-                    let mut text = res.content;
-                    if text.len() > 4000 {
-                        text.truncate(4000);
-                        text.push_str("\n\n[Содержимое урезано из-за лимита Telegram]");
-                    }
-                    bot.send_message(msg.chat.id, text).await?;
                 } else {
-                    bot.send_message(msg.chat.id, "Файл не найден, а текст пуст.")
-                        .await?;
+                    super::helpers::show_error_state(bot.clone(), msg.chat.id, state.clone(), user.id, "Файл не найден на диске.").await?;
                 }
             }
             Err(e) => {
-                bot.send_message(msg.chat.id, format!("Ошибка при получении статьи: {}", e))
-                    .await?;
+                super::helpers::show_error_state(bot.clone(), msg.chat.id, state.clone(), user.id, &format!("Ошибка при экспорте статьи: {}", e)).await?;
             }
         }
     } else if data.starts_with("toggle_doc:") {
@@ -131,6 +122,7 @@ pub async fn handle_callback_query_inner(
                 state.bridge.mark_article_read(id).await.tg_err()?;
                 "read"
             };
+            custom_ack = Some("Статус обновлен".to_string());
             
             let status_text = if new_status == "read" { "Прочитано" } else { "Не прочитано" };
             let read_time = (content.article.word_count as f64 / 200.0).ceil() as i64;
@@ -178,6 +170,7 @@ pub async fn handle_callback_query_inner(
             let id: i64 = parts[1].parse().unwrap_or(0);
             let val: i32 = parts[2].parse().unwrap_or(0);
             state.bridge.rate_article(id, Some(val)).await.tg_err()?;
+            custom_ack = Some("Оценка выставлена".to_string());
             
             let stars = "⭐".repeat(val as usize);
             if let Ok(content) = state.bridge.get_article_content(id).await {
@@ -213,7 +206,7 @@ pub async fn handle_callback_query_inner(
             .nth(1)
             .and_then(|s| s.parse().ok())
             .unwrap_or(0);
-        show_article(bot, msg, id, state).await?;
+        super::helpers::show_article_card_screen(bot.clone(), msg.chat.id, state.clone(), user.id, id).await?;
     } else if data.starts_with("read:") {
         let id: i64 = data
             .split(':')
@@ -221,7 +214,8 @@ pub async fn handle_callback_query_inner(
             .and_then(|s| s.parse().ok())
             .unwrap_or(0);
         state.bridge.mark_article_read(id).await.tg_err()?;
-        show_article(bot, msg, id, state).await?;
+        custom_ack = Some("Статус обновлен".to_string());
+        super::helpers::show_article_card_screen(bot.clone(), msg.chat.id, state.clone(), user.id, id).await?;
     } else if data.starts_with("unread:") {
         let id: i64 = data
             .split(':')
@@ -229,14 +223,15 @@ pub async fn handle_callback_query_inner(
             .and_then(|s| s.parse().ok())
             .unwrap_or(0);
         state.bridge.mark_article_unread(id).await.tg_err()?;
-        show_article(bot, msg, id, state).await?;
+        custom_ack = Some("Статус обновлен".to_string());
+        super::helpers::show_article_card_screen(bot.clone(), msg.chat.id, state.clone(), user.id, id).await?;
     } else if data.starts_with("art_del:") {
         let id: i64 = data
             .split(':')
             .nth(1)
             .and_then(|s| s.parse().ok())
             .unwrap_or(0);
-        show_delete_confirm(bot, msg, id, state).await?;
+        show_delete_confirm(bot.clone(), msg, id, state.clone()).await?;
     } else if data.starts_with("art_del_conf:") {
         let id: i64 = data
             .split(':')
@@ -244,24 +239,19 @@ pub async fn handle_callback_query_inner(
             .and_then(|s| s.parse().ok())
             .unwrap_or(0);
         state.bridge.delete_article(id).await.tg_err()?;
-        bot.edit_message_text(msg.chat.id, msg.id, "🗑 <b>Материал успешно удален.</b>")
-            .reply_markup(keyboards::back_to_hub_keyboard())
-            .parse_mode(teloxide::types::ParseMode::Html)
-            .await?;
+        custom_ack = Some("Материал удален".to_string());
+        let text = "🗑 <b>Материал успешно удален.</b>";
+        let markup = keyboards::back_to_hub_keyboard();
+        super::helpers::show_state_screen(bot.clone(), msg.chat.id, state.clone(), user.id, text.to_string(), Some(markup)).await?;
     } else if data.starts_with("art_rate:") {
         let id: i64 = data
             .split(':')
             .nth(1)
             .and_then(|s| s.parse().ok())
             .unwrap_or(0);
-        bot.edit_message_text(
-            msg.chat.id,
-            msg.id,
-            "⭐ <b>Пожалуйста, выберите оценку для материала:</b>",
-        )
-        .reply_markup(keyboards::rating_keyboard(id))
-        .parse_mode(teloxide::types::ParseMode::Html)
-        .await?;
+        let text = "⭐ <b>Пожалуйста, выберите оценку для материала:</b>";
+        let markup = keyboards::rating_keyboard(id);
+        super::helpers::show_state_screen(bot.clone(), msg.chat.id, state.clone(), user.id, text.to_string(), Some(markup)).await?;
     } else if data.starts_with("rate_set:") {
         let parts: Vec<&str> = data.split(':').collect();
         if parts.len() == 3 {
@@ -269,17 +259,17 @@ pub async fn handle_callback_query_inner(
             let val: i32 = parts[2].parse().unwrap_or(0);
             let rating = if val == 0 { None } else { Some(val) };
             state.bridge.rate_article(id, rating).await.tg_err()?;
+            custom_ack = Some("Оценка выставлена".to_string());
 
             if rating.is_some() {
                 state
                     .set_pending_state(user.id, PendingState::WaitingForComment { article_id: id })
                     .await;
-                bot.edit_message_text(msg.chat.id, msg.id, "⭐ <b>Оценка успешно установлена!</b>\n\nНапишите текстовый комментарий к этому материалу и отправьте его в ответном сообщении. Если комментарий не нужен, просто нажмите кнопку ниже.")
-                    .reply_markup(keyboards::back_to_article_keyboard(id))
-                    .parse_mode(teloxide::types::ParseMode::Html)
-                    .await?;
+                let text = "⭐ <b>Оценка успешно установлена!</b>\n\nНапишите текстовый комментарий к этому материалу и отправьте его в ответном сообщении. Если комментарий не нужен, просто нажмите кнопку ниже.";
+                let markup = keyboards::back_to_article_keyboard(id);
+                super::helpers::show_state_screen(bot.clone(), msg.chat.id, state.clone(), user.id, text.to_string(), Some(markup)).await?;
             } else {
-                show_article(bot, msg, id, state).await?;
+                super::helpers::show_article_card_screen(bot.clone(), msg.chat.id, state.clone(), user.id, id).await?;
             }
         }
     } else if data.starts_with("art_comm:") {
@@ -288,7 +278,7 @@ pub async fn handle_callback_query_inner(
             .nth(1)
             .and_then(|s| s.parse().ok())
             .unwrap_or(0);
-        show_comment_menu(bot, msg, id, state).await?;
+        show_comment_menu(bot.clone(), msg, id, state.clone()).await?;
     } else if data.starts_with("comm_set:") {
         let id: i64 = data
             .split(':')
@@ -298,14 +288,9 @@ pub async fn handle_callback_query_inner(
         state
             .set_pending_state(user.id, PendingState::WaitingForComment { article_id: id })
             .await;
-        bot.edit_message_text(
-            msg.chat.id,
-            msg.id,
-            "💬 <b>Пожалуйста, отправьте ваш комментарий следующим сообщением:</b>",
-        )
-        .reply_markup(keyboards::back_to_article_keyboard(id))
-        .parse_mode(teloxide::types::ParseMode::Html)
-        .await?;
+        let text = "💬 <b>Пожалуйста, отправьте ваш комментарий следующим сообщением:</b>";
+        let markup = keyboards::back_to_article_keyboard(id);
+        super::helpers::show_state_screen(bot.clone(), msg.chat.id, state.clone(), user.id, text.to_string(), Some(markup)).await?;
     } else if data.starts_with("comm_del:") {
         let id: i64 = data
             .split(':')
@@ -313,14 +298,15 @@ pub async fn handle_callback_query_inner(
             .and_then(|s| s.parse().ok())
             .unwrap_or(0);
         state.bridge.set_article_comment(id, None).await.tg_err()?;
-        show_article(bot, msg, id, state).await?;
+        custom_ack = Some("Комментарий удален".to_string());
+        super::helpers::show_article_card_screen(bot.clone(), msg.chat.id, state.clone(), user.id, id).await?;
     } else if data.starts_with("art_tags:") {
         let id: i64 = data
             .split(':')
             .nth(1)
             .and_then(|s| s.parse().ok())
             .unwrap_or(0);
-        show_article_tags(bot, msg, id, state).await?;
+        show_article_tags(bot.clone(), msg, id, state.clone()).await?;
     } else if data.starts_with("tag_add:") {
         let id: i64 = data
             .split(':')
@@ -330,21 +316,17 @@ pub async fn handle_callback_query_inner(
         state
             .set_pending_state(user.id, PendingState::WaitingForTag { article_id: id })
             .await;
-        bot.edit_message_text(
-            msg.chat.id,
-            msg.id,
-            "🏷 <b>Пожалуйста, отправьте название тега (или несколько через запятую):</b>",
-        )
-        .reply_markup(keyboards::back_to_article_keyboard(id))
-        .parse_mode(teloxide::types::ParseMode::Html)
-        .await?;
+        let text = "🏷 <b>Пожалуйста, отправьте название тега (или несколько через запятую):</b>";
+        let markup = keyboards::back_to_article_keyboard(id);
+        super::helpers::show_state_screen(bot.clone(), msg.chat.id, state.clone(), user.id, text.to_string(), Some(markup)).await?;
     } else if data.starts_with("tag_rem:") {
         let parts: Vec<&str> = data.splitn(3, ':').collect();
         if parts.len() == 3 {
             let id: i64 = parts[1].parse().unwrap_or(0);
             let tag = parts[2];
             state.bridge.remove_tag(id, tag).await.tg_err()?;
-            show_article_tags(bot, msg, id, state).await?;
+            custom_ack = Some("Тег удален".to_string());
+            show_article_tags(bot.clone(), msg, id, state.clone()).await?;
         }
     } else if data.starts_with("tags_list:") {
         let page: i64 = data
@@ -352,78 +334,64 @@ pub async fn handle_callback_query_inner(
             .nth(1)
             .and_then(|s| s.parse().ok())
             .unwrap_or(0);
-        show_tags_list(bot, msg, page, state).await?;
+        super::helpers::show_tags_list_screen(bot.clone(), msg.chat.id, state.clone(), user.id, page).await?;
     } else if data.starts_with("stag:") {
         let parts: Vec<&str> = data.splitn(3, ':').collect();
         if parts.len() == 3 {
             let tag = parts[1];
             let page: i64 = parts[2].parse().unwrap_or(0);
-            show_articles_by_tag(bot, msg, tag, page, state).await?;
+            show_articles_by_tag(bot.clone(), msg, tag, page, state.clone()).await?;
         }
     } else if data == "ratings_list" {
-        show_ratings_list(bot, msg).await?;
+        show_ratings_list(bot.clone(), msg, state.clone()).await?;
     } else if data.starts_with("srate:") {
         let parts: Vec<&str> = data.split(':').collect();
         if parts.len() == 3 {
             let rating: i32 = parts[1].parse().unwrap_or(0);
             let page: i64 = parts[2].parse().unwrap_or(0);
-            show_articles_by_rating(bot, msg, rating, page, state).await?;
+            show_articles_by_rating(bot.clone(), msg, rating, page, state.clone()).await?;
         }
     } else if data.starts_with("stats:") {
         let section = data.split(':').nth(1).unwrap_or("overview");
-        show_stats(bot, msg, section, state).await?;
+        super::helpers::show_stats_screen(bot.clone(), msg.chat.id, state.clone(), user.id, section).await?;
     } else if data == "settings" {
-        show_settings(bot, msg, user.id, state).await?;
+        super::helpers::show_settings_screen(bot.clone(), msg.chat.id, state.clone(), user.id).await?;
     } else if data.starts_with("set_fmt:") {
         let fmt_str = data.split(':').nth(1).unwrap_or("markdown");
         if let Ok(fmt) = fmt_str.parse::<crate::domain::SaveFormat>() {
             let mut map = state.user_formats.lock().await;
             map.insert(user.id, fmt);
+            custom_ack = Some(format!("Формат скачивания изменен на {}", fmt.to_string().to_uppercase()));
         }
-        show_settings(bot, msg, user.id, state).await?;
+        super::helpers::show_settings_screen(bot.clone(), msg.chat.id, state.clone(), user.id).await?;
     } else if data == "reset_lib_prompt" {
-        bot.edit_message_text(msg.chat.id, msg.id, "⚠️ <b>ВНИМАНИЕ!</b>\n\nЭто действие безвозвратно удалит ВСЕ сохраненные материалы, файлы и записи в базе данных.\n\nВы уверены?")
-            .reply_markup(keyboards::reset_lib_confirm_keyboard())
-            .parse_mode(teloxide::types::ParseMode::Html)
-            .await?;
+        let text = "⚠️ <b>ВНИМАНИЕ!</b>\n\nЭто действие безвозвратно удалит ВСЕ сохраненные материалы, файлы и записи в базе данных.\n\nВы уверены?";
+        let markup = keyboards::reset_lib_confirm_keyboard();
+        super::helpers::show_state_screen(bot.clone(), msg.chat.id, state.clone(), user.id, text.to_string(), Some(markup)).await?;
     } else if data == "reset_lib_confirm" {
         state.bridge.reset_library().await.tg_err()?;
-        bot.edit_message_text(
-            msg.chat.id,
-            msg.id,
-            "✅ <b>Библиотека полностью очищена.</b>",
-        )
-        .reply_markup(keyboards::back_to_hub_keyboard())
-        .parse_mode(teloxide::types::ParseMode::Html)
-        .await?;
+        custom_ack = Some("Библиотека сброшена".to_string());
+        let text = "✅ <b>Библиотека полностью очищена.</b>";
+        let markup = keyboards::back_to_hub_keyboard();
+        super::helpers::show_state_screen(bot.clone(), msg.chat.id, state.clone(), user.id, text.to_string(), Some(markup)).await?;
     } else if data == "search" {
-        show_search_menu(bot, msg, user.id, state).await?;
+        super::helpers::show_search_menu_screen(bot.clone(), msg.chat.id, state.clone(), user.id).await?;
     } else if data == "sf_query" {
         state
             .set_pending_state(user.id, PendingState::WaitingForSearchQuery)
             .await;
-        bot.edit_message_text(
-            msg.chat.id,
-            msg.id,
-            "🔎 <b>Введите поисковый запрос (текст или ключевые слова):</b>",
-        )
-        .reply_markup(keyboards::back_to_article_keyboard(0)) // fallback to cancel
-        .parse_mode(teloxide::types::ParseMode::Html)
-        .await?;
+        let text = "🔎 <b>Введите поисковый запрос (текст или ключевые слова):</b>";
+        let markup = keyboards::back_to_article_keyboard(0);
+        super::helpers::show_state_screen(bot.clone(), msg.chat.id, state.clone(), user.id, text.to_string(), Some(markup)).await?;
     } else if data == "sf_domain" {
         state
             .set_pending_state(user.id, PendingState::WaitingForFilterDomain)
             .await;
-        bot.edit_message_text(
-            msg.chat.id,
-            msg.id,
-            "🌐 <b>Введите домен сайта для фильтрации (например, habr.com или medium.com):</b>",
-        )
-        .reply_markup(keyboards::back_to_article_keyboard(0))
-        .parse_mode(teloxide::types::ParseMode::Html)
-        .await?;
+        let text = "🌐 <b>Введите домен сайта для фильтрации (например, habr.com или medium.com):</b>";
+        let markup = keyboards::back_to_article_keyboard(0);
+        super::helpers::show_state_screen(bot.clone(), msg.chat.id, state.clone(), user.id, text.to_string(), Some(markup)).await?;
     } else if data == "sf_tag" {
-        show_search_tag_select(bot, msg, state).await?;
+        show_search_tag_select(bot.clone(), msg, state.clone()).await?;
     } else if data.starts_with("sft_select:") {
         let tag = data.split(':').nth(1).unwrap_or("none");
         state
@@ -435,16 +403,11 @@ pub async fn handle_callback_query_inner(
                 };
             })
             .await;
-        show_search_menu(bot, msg, user.id, state).await?;
+        super::helpers::show_search_menu_screen(bot.clone(), msg.chat.id, state.clone(), user.id).await?;
     } else if data == "sf_status" {
-        bot.edit_message_text(
-            msg.chat.id,
-            msg.id,
-            "📝 <b>Выберите статус прочтения для фильтрации:</b>",
-        )
-        .reply_markup(keyboards::search_status_select_keyboard())
-        .parse_mode(teloxide::types::ParseMode::Html)
-        .await?;
+        let text = "📝 <b>Выберите статус прочтения для фильтрации:</b>";
+        let markup = keyboards::search_status_select_keyboard();
+        super::helpers::show_state_screen(bot.clone(), msg.chat.id, state.clone(), user.id, text.to_string(), Some(markup)).await?;
     } else if data.starts_with("sfs_") {
         let val = data.strip_prefix("sfs_").unwrap_or("any");
         state
@@ -456,16 +419,11 @@ pub async fn handle_callback_query_inner(
                 };
             })
             .await;
-        show_search_menu(bot, msg, user.id, state).await?;
+        super::helpers::show_search_menu_screen(bot.clone(), msg.chat.id, state.clone(), user.id).await?;
     } else if data == "sf_rating" {
-        bot.edit_message_text(
-            msg.chat.id,
-            msg.id,
-            "⭐ <b>Выберите оценку для фильтрации:</b>",
-        )
-        .reply_markup(keyboards::search_rating_select_keyboard())
-        .parse_mode(teloxide::types::ParseMode::Html)
-        .await?;
+        let text = "⭐ <b>Выберите оценку для фильтрации:</b>";
+        let markup = keyboards::search_rating_select_keyboard();
+        super::helpers::show_state_screen(bot.clone(), msg.chat.id, state.clone(), user.id, text.to_string(), Some(markup)).await?;
     } else if data.starts_with("sfr_") {
         let val = data.strip_prefix("sfr_").unwrap_or("any");
         state
@@ -482,16 +440,11 @@ pub async fn handle_callback_query_inner(
                 }
             })
             .await;
-        show_search_menu(bot, msg, user.id, state).await?;
+        super::helpers::show_search_menu_screen(bot.clone(), msg.chat.id, state.clone(), user.id).await?;
     } else if data == "sf_date" {
-        bot.edit_message_text(
-            msg.chat.id,
-            msg.id,
-            "📅 <b>Выберите интервал добавления:</b>",
-        )
-        .reply_markup(keyboards::search_date_select_keyboard())
-        .parse_mode(teloxide::types::ParseMode::Html)
-        .await?;
+        let text = "📅 <b>Выберите интервал добавления:</b>";
+        let markup = keyboards::search_date_select_keyboard();
+        super::helpers::show_state_screen(bot.clone(), msg.chat.id, state.clone(), user.id, text.to_string(), Some(markup)).await?;
     } else if data.starts_with("sfd_") {
         let val = data.strip_prefix("sfd_").unwrap_or("any");
         state
@@ -504,134 +457,25 @@ pub async fn handle_callback_query_inner(
                 };
             })
             .await;
-        show_search_menu(bot, msg, user.id, state).await?;
+        super::helpers::show_search_menu_screen(bot.clone(), msg.chat.id, state.clone(), user.id).await?;
     } else if data == "sf_reset" {
         state.clear_search_session(user.id).await;
-        show_search_menu(bot, msg, user.id, state).await?;
+        super::helpers::show_search_menu_screen(bot.clone(), msg.chat.id, state.clone(), user.id).await?;
     } else if data.starts_with("sf_run:") {
         let page: i64 = data
             .split(':')
             .nth(1)
             .and_then(|s| s.parse().ok())
             .unwrap_or(0);
-        run_search(bot, msg, user.id, page, state).await?;
+        run_search(bot.clone(), msg, user.id, page, state).await?;
     }
 
-    Ok(())
-}
-
-async fn show_hub(bot: Bot, msg: &Message, state: Arc<BotState>) -> ResponseResult<()> {
-    let stats = state.bridge.get_reading_stats().await.tg_err()?;
-    let progress = if stats.total_articles > 0 {
-        (stats.read_articles as f64 / stats.total_articles as f64) * 100.0
+    if let Some(text) = custom_ack {
+        let _ = bot.answer_callback_query(q.id).text(text).await;
     } else {
-        0.0
-    };
-    let text = format!(
-        "📚 <b>Read It Later Hub</b>\n\n\
-         Всего материалов: <b>{}</b>\n\
-         Прочитано: <b>{}</b> (прогресс {:.1}%)\n\
-         Не прочитано: <b>{}</b>\n\n\
-         Выберите действие на клавиатуре ниже:",
-        stats.total_articles, stats.read_articles, progress, stats.unread_articles
-    );
-    bot.edit_message_text(msg.chat.id, msg.id, text)
-        .reply_markup(keyboards::hub_keyboard())
-        .parse_mode(teloxide::types::ParseMode::Html)
-        .await?;
-    Ok(())
-}
-
-async fn show_list(
-    bot: Bot,
-    msg: &Message,
-    status: &str,
-    page: i64,
-    state: Arc<BotState>,
-) -> ResponseResult<()> {
-    let limit = 8;
-    let offset = page * limit;
-    let status_filter = if status == "all" {
-        None
-    } else {
-        Some(status.to_string())
-    };
-
-    let paginated = state
-        .bridge
-        .search_articles_advanced(
-            None,
-            status_filter,
-            None,
-            None,
-            None,
-            false,
-            false,
-            None,
-            limit,
-            offset,
-        )
-        .await
-        .tg_err()?;
-
-    let total_pages = (paginated.total_count as f64 / limit as f64).ceil() as i64;
-
-    let prev_cb = if page > 0 {
-        Some(format!("list:{}:{}", status, page - 1))
-    } else {
-        None
-    };
-    let next_cb = if page + 1 < total_pages {
-        Some(format!("list:{}:{}", status, page + 1))
-    } else {
-        None
-    };
-
-    let title = match status {
-        "read" => "Прочитанные материалы",
-        "unread" => "Непрочитанные материалы",
-        _ => "Все материалы библиотеки",
-    };
-
-    let text = views::render_articles_list(&paginated.articles, title, page, total_pages);
-    bot.edit_message_text(msg.chat.id, msg.id, text)
-        .reply_markup(keyboards::articles_list_keyboard(&paginated.articles, prev_cb, next_cb, "hub"))
-        .parse_mode(teloxide::types::ParseMode::Html)
-        .await?;
-    Ok(())
-}
-
-async fn show_article(
-    bot: Bot,
-    msg: &Message,
-    id: i64,
-    state: Arc<BotState>,
-) -> ResponseResult<()> {
-    if id == 0 {
-        // Fallback to hub if id is invalid or it was a cancel button
-        show_hub(bot, msg, state).await?;
-        return Ok(());
+        let _ = bot.answer_callback_query(q.id).await;
     }
 
-    match state.bridge.get_article_content(id).await.tg_err() {
-        Ok(content) => {
-            let text = views::render_article_card(&content.article);
-            bot.edit_message_text(msg.chat.id, msg.id, text)
-                .reply_markup(keyboards::article_card_keyboard(
-                    content.article.id,
-                    &content.article.status,
-                    &content.article.url,
-                ))
-                .parse_mode(teloxide::types::ParseMode::Html)
-                .await?;
-        }
-        Err(_) => {
-            bot.edit_message_text(msg.chat.id, msg.id, "❌ <b>Ошибка: материал не найден.</b>")
-                .reply_markup(keyboards::back_to_hub_keyboard())
-                .parse_mode(teloxide::types::ParseMode::Html)
-                .await?;
-        }
-    }
     Ok(())
 }
 
@@ -641,16 +485,14 @@ async fn show_delete_confirm(
     id: i64,
     state: Arc<BotState>,
 ) -> ResponseResult<()> {
+    let user_id = msg.from().map(|u| u.id).unwrap_or(UserId(0));
     let content = state.bridge.get_article_content(id).await.tg_err()?;
     let text = format!(
         "⚠️ <b>Вы уверены, что хотите удалить этот материал?</b>\n\n<b>{}</b>",
         views::escape_html(&content.article.title)
     );
-    bot.edit_message_text(msg.chat.id, msg.id, text)
-        .reply_markup(keyboards::delete_confirm_keyboard(id))
-        .parse_mode(teloxide::types::ParseMode::Html)
-        .await?;
-    Ok(())
+    let markup = keyboards::delete_confirm_keyboard(id);
+    super::helpers::show_state_screen(bot, msg.chat.id, state, user_id, text, Some(markup)).await
 }
 
 async fn show_comment_menu(
@@ -659,6 +501,7 @@ async fn show_comment_menu(
     id: i64,
     state: Arc<BotState>,
 ) -> ResponseResult<()> {
+    let user_id = msg.from().map(|u| u.id).unwrap_or(UserId(0));
     let content = state.bridge.get_article_content(id).await.tg_err()?;
     let current_comm = content
         .article
@@ -669,11 +512,8 @@ async fn show_comment_menu(
         "💬 <b>Комментарий к статье:</b>\n\n<i>{}</i>",
         views::escape_html(current_comm)
     );
-    bot.edit_message_text(msg.chat.id, msg.id, text)
-        .reply_markup(keyboards::comment_keyboard(id))
-        .parse_mode(teloxide::types::ParseMode::Html)
-        .await?;
-    Ok(())
+    let markup = keyboards::comment_keyboard(id);
+    super::helpers::show_state_screen(bot, msg.chat.id, state, user_id, text, Some(markup)).await
 }
 
 async fn show_article_tags(
@@ -682,6 +522,7 @@ async fn show_article_tags(
     id: i64,
     state: Arc<BotState>,
 ) -> ResponseResult<()> {
+    let user_id = msg.from().map(|u| u.id).unwrap_or(UserId(0));
     let content = state.bridge.get_article_content(id).await.tg_err()?;
     let mut rows = vec![];
     rows.push(vec![InlineKeyboardButton::callback(
@@ -689,7 +530,6 @@ async fn show_article_tags(
         format!("tag_add:{}", id),
     )]);
 
-    // Row for each tag to delete it
     for t in &content.article.tags {
         rows.push(vec![InlineKeyboardButton::callback(
             format!("❌ Удалить #{}", t),
@@ -718,42 +558,7 @@ async fn show_article_tags(
         "🏷 <b>Теги материала:</b>\n\n<code>{}</code>",
         views::escape_html(&tags_text)
     );
-    bot.edit_message_text(msg.chat.id, msg.id, text)
-        .reply_markup(markup)
-        .parse_mode(teloxide::types::ParseMode::Html)
-        .await?;
-    Ok(())
-}
-
-async fn show_tags_list(
-    bot: Bot,
-    msg: &Message,
-    page: i64,
-    state: Arc<BotState>,
-) -> ResponseResult<()> {
-    let tags = state.bridge.list_tags().await.tg_err()?;
-    let limit = 10;
-    let offset = page * limit;
-    let total_pages = (tags.len() as f64 / limit as f64).ceil() as i64;
-
-    let mut paged_tags = tags;
-    if offset < paged_tags.len() as i64 {
-        paged_tags = paged_tags.split_off(offset as usize);
-    } else {
-        paged_tags.clear();
-    }
-    paged_tags.truncate(limit as usize);
-
-    let text = views::render_tags_stats(&paged_tags);
-    bot.edit_message_text(msg.chat.id, msg.id, text)
-        .reply_markup(keyboards::tags_list_keyboard(
-            &paged_tags,
-            page,
-            total_pages,
-        ))
-        .parse_mode(teloxide::types::ParseMode::Html)
-        .await?;
-    Ok(())
+    super::helpers::show_state_screen(bot, msg.chat.id, state, user_id, text, Some(markup)).await
 }
 
 async fn show_articles_by_tag(
@@ -763,6 +568,7 @@ async fn show_articles_by_tag(
     page: i64,
     state: Arc<BotState>,
 ) -> ResponseResult<()> {
+    let user_id = msg.from().map(|u| u.id).unwrap_or(UserId(0));
     let limit = 8;
     let offset = page * limit;
     let paginated = state
@@ -800,15 +606,12 @@ async fn show_articles_by_tag(
         page,
         total_pages,
     );
-    bot.edit_message_text(msg.chat.id, msg.id, text)
-        .reply_markup(keyboards::pagination_keyboard(
-            prev_cb,
-            next_cb,
-            "tags_list:0",
-        ))
-        .parse_mode(teloxide::types::ParseMode::Html)
-        .await?;
-    Ok(())
+    let markup = keyboards::pagination_keyboard(
+        prev_cb,
+        next_cb,
+        "tags_list:0",
+    );
+    super::helpers::show_state_screen(bot, msg.chat.id, state, user_id, text, Some(markup)).await
 }
 
 async fn show_articles_by_rating(
@@ -818,6 +621,7 @@ async fn show_articles_by_rating(
     page: i64,
     state: Arc<BotState>,
 ) -> ResponseResult<()> {
+    let user_id = msg.from().map(|u| u.id).unwrap_or(UserId(0));
     let limit = 8;
     let offset = page * limit;
     let rating_opt = if rating == 0 { None } else { Some(rating) };
@@ -849,89 +653,12 @@ async fn show_articles_by_rating(
         format!("Оценка: {} ⭐", rating)
     };
     let text = views::render_articles_list(&paginated.articles, &title, page, total_pages);
-    bot.edit_message_text(msg.chat.id, msg.id, text)
-        .reply_markup(keyboards::pagination_keyboard(
-            prev_cb,
-            next_cb,
-            "ratings_list",
-        ))
-        .parse_mode(teloxide::types::ParseMode::Html)
-        .await?;
-    Ok(())
-}
-
-async fn show_stats(
-    bot: Bot,
-    msg: &Message,
-    section: &str,
-    state: Arc<BotState>,
-) -> ResponseResult<()> {
-    let text = match section {
-        "sources" => {
-            let sources = state.bridge.get_sources_stats(15).await.tg_err()?;
-            views::render_sources_stats(&sources)
-        }
-        "tags" => {
-            let tags = state.bridge.get_tags_stats().await.tg_err()?;
-            views::render_tags_stats(&tags)
-        }
-        "ratings" => {
-            let ratings = state.bridge.get_ratings_stats().await.tg_err()?;
-            views::render_ratings_stats(&ratings)
-        }
-        "dynamics" => {
-            let dynamics = state.bridge.get_dynamics_stats().await.tg_err()?;
-            views::render_dynamics_stats(&dynamics)
-        }
-        _ => {
-            let stats = state.bridge.get_extended_stats().await.tg_err()?;
-            views::render_stats_overview(&stats)
-        }
-    };
-
-    bot.edit_message_text(msg.chat.id, msg.id, text)
-        .reply_markup(keyboards::stats_menu_keyboard())
-        .parse_mode(teloxide::types::ParseMode::Html)
-        .await?;
-    Ok(())
-}
-
-async fn show_settings(
-    bot: Bot,
-    msg: &Message,
-    user_id: UserId,
-    state: Arc<BotState>,
-) -> ResponseResult<()> {
-    let current_fmt = {
-        let map = state.user_formats.lock().await;
-        *map.get(&user_id).unwrap_or(&state.config.default_format)
-    }
-    .to_string();
-
-    let text = format!(
-        "⚙️ <b>Настройки Read It Later Bot</b>\n\nТекущий формат сохранения по умолчанию: <b>{}</b>",
-        current_fmt
+    let markup = keyboards::pagination_keyboard(
+        prev_cb,
+        next_cb,
+        "ratings_list",
     );
-    bot.edit_message_text(msg.chat.id, msg.id, text)
-        .reply_markup(keyboards::settings_keyboard(&current_fmt))
-        .parse_mode(teloxide::types::ParseMode::Html)
-        .await?;
-    Ok(())
-}
-
-async fn show_search_menu(
-    bot: Bot,
-    msg: &Message,
-    user_id: UserId,
-    state: Arc<BotState>,
-) -> ResponseResult<()> {
-    let session = state.get_search_session(user_id).await;
-    let text = "🔎 <b>Расширенный поиск материалов</b>\n\nНастройте фильтры с помощью кнопок ниже и нажмите <b>Искать</b>:";
-    bot.edit_message_text(msg.chat.id, msg.id, text)
-        .reply_markup(keyboards::search_menu_keyboard(&session))
-        .parse_mode(teloxide::types::ParseMode::Html)
-        .await?;
-    Ok(())
+    super::helpers::show_state_screen(bot, msg.chat.id, state, user_id, text, Some(markup)).await
 }
 
 async fn show_search_tag_select(
@@ -939,6 +666,7 @@ async fn show_search_tag_select(
     msg: &Message,
     state: Arc<BotState>,
 ) -> ResponseResult<()> {
+    let user_id = msg.from().map(|u| u.id).unwrap_or(UserId(0));
     let tags = state.bridge.list_tags().await.tg_err()?;
     let mut rows = vec![];
     for chunk in tags.chunks(3) {
@@ -961,11 +689,7 @@ async fn show_search_tag_select(
     )]);
     let markup = InlineKeyboardMarkup::new(rows);
 
-    bot.edit_message_text(msg.chat.id, msg.id, "🏷 <b>Выберите тег для фильтрации:</b>")
-        .reply_markup(markup)
-        .parse_mode(teloxide::types::ParseMode::Html)
-        .await?;
-    Ok(())
+    super::helpers::show_state_screen(bot, msg.chat.id, state, user_id, "🏷 <b>Выберите тег для фильтрации:</b>".to_string(), Some(markup)).await
 }
 
 async fn run_search(
@@ -1010,14 +734,12 @@ async fn run_search(
 
     let text =
         views::render_articles_list(&paginated.articles, "Результаты поиска", page, total_pages);
-    bot.edit_message_text(msg.chat.id, msg.id, text)
-        .reply_markup(keyboards::articles_list_keyboard(&paginated.articles, prev_cb, next_cb, "search"))
-        .parse_mode(teloxide::types::ParseMode::Html)
-        .await?;
-    Ok(())
+    let markup = keyboards::articles_list_keyboard(&paginated.articles, prev_cb, next_cb, "search");
+    super::helpers::show_state_screen(bot, msg.chat.id, state, user_id, text, Some(markup)).await
 }
 
-async fn show_ratings_list(bot: Bot, msg: &Message) -> ResponseResult<()> {
+async fn show_ratings_list(bot: Bot, msg: &Message, state: Arc<BotState>) -> ResponseResult<()> {
+    let user_id = msg.from().map(|u| u.id).unwrap_or(UserId(0));
     let mut rows = vec![];
     for rating in (1..=5).rev() {
         rows.push(vec![InlineKeyboardButton::callback(
@@ -1032,13 +754,5 @@ async fn show_ratings_list(bot: Bot, msg: &Message) -> ResponseResult<()> {
     rows.push(vec![InlineKeyboardButton::callback("🏠 В хаб", "hub")]);
     let markup = InlineKeyboardMarkup::new(rows);
 
-    bot.edit_message_text(
-        msg.chat.id,
-        msg.id,
-        "⭐ <b>Выберите оценку для фильтрации:</b>",
-    )
-    .reply_markup(markup)
-    .parse_mode(teloxide::types::ParseMode::Html)
-    .await?;
-    Ok(())
+    super::helpers::show_state_screen(bot, msg.chat.id, state, user_id, "⭐ <b>Выберите оценку для фильтрации:</b>".to_string(), Some(markup)).await
 }

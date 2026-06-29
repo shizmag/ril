@@ -3,7 +3,7 @@ use crate::telegram::state::{BotState, PendingState};
 use crate::telegram::{keyboards, views, Command, MapTgError};
 use std::sync::Arc;
 use teloxide::prelude::*;
-use teloxide::types::{InputFile, Message, UserId};
+use teloxide::types::{InputFile, Message};
 use teloxide::utils::command::BotCommands;
 
 pub async fn handle_message(bot: Bot, msg: Message, state: Arc<BotState>) -> ResponseResult<()> {
@@ -382,70 +382,11 @@ pub async fn handle_command(
     Ok(())
 }
 
-    Ok(())
-}
-
-async fn send_menu_message(
-    bot: Bot,
-    chat_id: ChatId,
-    user_id: UserId,
-    text: String,
-    reply_markup: Option<teloxide::types::InlineKeyboardMarkup>,
-    state: Arc<BotState>,
-) -> ResponseResult<Message> {
-    // Delete previous menu message if exists
-    if let Some(prev_id) = state.get_and_clear_last_menu(user_id).await {
-        let _ = bot.delete_message(chat_id, teloxide::types::MessageId(prev_id)).await;
-    }
-
-    let mut send = bot.send_message(chat_id, text);
-    if let Some(markup) = reply_markup {
-        send = send.reply_markup(markup);
-    }
-    let sent = send.parse_mode(teloxide::types::ParseMode::Html).await?;
-
-    state.set_last_menu(user_id, sent.id.0).await;
-    Ok(sent)
-}
-
 fn spawn_delayed_delete(bot: Bot, chat_id: ChatId, msg_id: teloxide::types::MessageId, delay_secs: u64) {
     tokio::spawn(async move {
         tokio::time::sleep(std::time::Duration::from_secs(delay_secs)).await;
         let _ = bot.delete_message(chat_id, msg_id).await;
     });
-}
-
-async fn send_hub(
-    bot: Bot,
-    chat_id: ChatId,
-    state: Arc<BotState>,
-    user_id: UserId,
-) -> ResponseResult<()> {
-    let stats = state.bridge.get_reading_stats().await.tg_err()?;
-    let progress = if stats.total_articles > 0 {
-        (stats.read_articles as f64 / stats.total_articles as f64) * 100.0
-    } else {
-        0.0
-    };
-
-    let welcome = format!(
-        "📚 <b>Read It Later Bot</b> — ваш удобный хаб для материалов!\n\n\
-         Всего материалов: <b>{}</b>\n\
-         Прочитано: <b>{}</b> (прогресс {:.1}%)\n\
-         Не прочитано: <b>{}</b>\n\n\
-         Отправьте мне ссылку, чтобы сохранить её, или воспользуйтесь кнопками меню:",
-        stats.total_articles, stats.read_articles, progress, stats.unread_articles
-    );
-    send_menu_message(
-        bot,
-        chat_id,
-        user_id,
-        welcome,
-        Some(keyboards::hub_keyboard()),
-        state,
-    )
-    .await?;
-    Ok(())
 }
 
 pub async fn handle_urls(
