@@ -223,6 +223,7 @@ async def test_process_url_pdf_disabled_images(mocker, monkeypatch, setup_test_e
     mocker.patch("ril.core.download_pdf", return_value=Path("/tmp/dummy.pdf"))
     
     # Mock marker dependencies
+    mocker.patch("marker.models.create_model_dict", return_value={})
     mock_config_parser_cls = mocker.patch("marker.config.parser.ConfigParser")
     mock_config_parser = mock_config_parser_cls.return_value
     mock_config_parser.generate_config_dict.return_value = {}

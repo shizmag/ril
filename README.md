@@ -87,7 +87,6 @@ RIL separates capture, processing, storage, and access:
 │   ├── readability_utils.py    # Article extraction helpers
 │   ├── converters.py           # Markdown/HTML/EPUB conversion and asset handling
 │   ├── db.py                   # SQLite storage and FTS5 search
-│   ├── telegram_bot.py         # Python Telegram bot
 │   ├── mcp_server.py           # Python MCP server
 │   └── bridge_json.py          # JSON bridge used by the Rust daemon
 │
@@ -179,12 +178,14 @@ The Telegram user allowlist is strongly recommended. Without it, anyone who can 
 
 ## Usage
 
-### Telegram Bot
+### Telegram Bot (Rust Daemon)
 
-Run the bot:
+The Telegram bot is run via the Rust daemon (`ril-daemon`), which delegates processing to the Python backend.
+
+From the `ril-daemon` directory:
 
 ```bash
-.venv/bin/python main.py bot
+cargo run -- telegram
 ```
 
 Send a URL to the bot:

@@ -109,11 +109,6 @@ def test_cli_add_failure(mocker, setup_test_environment, capsys):
     captured = capsys.readouterr()
     assert "Error: Failed crawl" in captured.err
 
-def test_cli_run_bot(mocker):
-    mock_run_bot = mocker.patch("ril.telegram_bot.run_bot")
-    with patch("sys.argv", ["main.py", "bot"]):
-        main()
-        mock_run_bot.assert_called_once()
 
 def test_cli_run_mcp(mocker):
     mock_mcp_run = mocker.patch("ril.mcp_server.mcp.run")

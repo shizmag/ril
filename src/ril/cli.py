@@ -120,10 +120,7 @@ def handle_reset(args):
         print(f"Error resetting library: {e}", file=sys.stderr)
         sys.exit(1)
 
-def handle_bot(args):
-    """Run the Telegram Bot."""
-    from ril.telegram_bot import run_bot
-    run_bot()
+
 
 def handle_mcp(args):
     """Run the MCP Server."""
@@ -191,8 +188,7 @@ def main():
     # mcp command
     subparsers.add_parser("mcp", help="Run the MCP Server (stdio)")
     
-    # bot command
-    subparsers.add_parser("bot", help="Run the Telegram Bot")
+
     
     # add command
     parser_add = subparsers.add_parser("add", help="Add a webpage to the library")
@@ -242,7 +238,6 @@ def main():
     # Command router
     commands = {
         "mcp": handle_mcp,
-        "bot": handle_bot,
         "add": handle_add,
         "search": handle_search,
         "stats": handle_stats,
