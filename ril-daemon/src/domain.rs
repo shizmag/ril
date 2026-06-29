@@ -134,3 +134,16 @@ pub struct ArticleContent {
     pub article: ArticleSummary,
     pub content: String,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExportResult {
+    pub article_id: i64,
+    pub title: String,
+    pub format: String,
+    pub file_path: String,
+    pub filename: String,
+    pub word_count: i64,
+    pub status: String,
+    pub rating: Option<i32>,
+    pub tags: Vec<String>,
+}

@@ -426,6 +426,30 @@ impl PythonBridge {
                 state.recalc_stats();
                 serde_json::json!({ "success": true })
             }
+            "export_article" => {
+                let id = args.get("article_id").and_then(|v| v.as_i64()).unwrap_or(0);
+                let format = args.get("format").and_then(|v| v.as_str()).unwrap_or("markdown");
+                let found = state.articles.iter().find(|art| art.id == id);
+                if let Some(art) = found {
+                    serde_json::json!({
+                        "article_id": art.id,
+                        "title": art.title,
+                        "format": format,
+                        "file_path": format!("/mock/library/{}.{}", art.id, format),
+                        "filename": format!("{}.{}", art.id, format),
+                        "word_count": art.word_count,
+                        "status": art.status,
+                        "rating": art.rating,
+                        "tags": art.tags
+                    })
+                } else {
+                    return Err(DaemonError::BridgePython {
+                        code: "NOT_FOUND".to_string(),
+                        message: format!("Article with ID {} not found", id),
+                        details: "".to_string(),
+                    });
+                }
+            }
             "search_articles_advanced" => {
                 let status = args.get("status").and_then(|v| v.as_str());
                 let tag = args.get("tag").and_then(|v| v.as_str());
@@ -742,6 +766,15 @@ impl PythonBridge {
         }
         let res: Resp = self.call("delete_article", Args { article_id }).await?;
         Ok(res.success)
+    }
+
+    pub async fn export_article(&self, article_id: i64, format: SaveFormat) -> Result<crate::domain::ExportResult> {
+        #[derive(Serialize)]
+        struct Args {
+            article_id: i64,
+            format: SaveFormat,
+        }
+        self.call("export_article", Args { article_id, format }).await
     }
 
     pub async fn reset_library(&self) -> Result<bool> {

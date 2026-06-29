@@ -23,6 +23,7 @@ def setup_test_environment(monkeypatch):
     # Monkeypatch the config module variables
     monkeypatch.setattr("ril.config.LIBRARY_DIR", library_dir)
     monkeypatch.setattr("ril.config.DB_PATH", db_path)
+    monkeypatch.setattr("ril.config.DISABLE_IMAGES", False)
     
     # Re-initialize the database in the temporary path
     from ril import db

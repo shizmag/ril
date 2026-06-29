@@ -212,3 +212,58 @@ async def test_process_url_pdf(mocker, setup_test_environment):
     assert db_article is not None
     assert db_article["title"] == "Mock PDF Title"
 
+
+@pytest.mark.asyncio
+async def test_process_url_pdf_disabled_images(mocker, monkeypatch, setup_test_environment):
+    from ril import core, config
+    monkeypatch.setattr(config, "DISABLE_IMAGES", True)
+
+    # Mock download_pdf to return a dummy path
+    from pathlib import Path
+    mocker.patch("ril.core.download_pdf", return_value=Path("/tmp/dummy.pdf"))
+    
+    # Mock marker dependencies
+    mock_config_parser_cls = mocker.patch("marker.config.parser.ConfigParser")
+    mock_config_parser = mock_config_parser_cls.return_value
+    mock_config_parser.generate_config_dict.return_value = {}
+    mock_config_parser.get_processors.return_value = []
+    mock_config_parser.get_renderer.return_value = None
+    mock_config_parser.get_llm_service.return_value = None
+    
+    mock_converter_cls = mock_config_parser.get_converter_cls.return_value
+    mock_converter_obj = mock_converter_cls.return_value
+    
+    # Mock returned rendered object
+    from pydantic import BaseModel
+    class MockRendered(BaseModel):
+        metadata: dict = {"title": "Mock PDF Title"}
+        
+    mock_rendered = MockRendered()
+    mock_converter_obj.return_value = mock_rendered
+    
+    from PIL import Image
+    mock_img = Image.new("RGB", (100, 100))
+    
+    # Mock text_from_rendered to return mock markdown text and one mock image
+    mocker.patch("marker.output.text_from_rendered", return_value=(
+        "# Mock PDF Title\n\nSome text.\n\n![image-0.jpg](image-0.jpg)",
+        "md",
+        {"image-0.jpg": mock_img}
+    ))
+    
+    # Execute process_url with a PDF URL
+    result = await core.process_url("https://example.com/test-paper.pdf")
+    
+    # Verify results
+    assert result["title"] == "Mock PDF Title"
+    
+    # Verify file saved has no images
+    file_path = result["file_path"]
+    assert os.path.exists(file_path)
+    with open(file_path, "r", encoding="utf-8") as f:
+        content = f.read()
+        assert "# Mock PDF Title" in content
+        assert "image-0.jpg" not in content
+        assert "img_ref_0" not in content
+        assert "data:image/jpeg;base64," not in content
+

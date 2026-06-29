@@ -42,3 +42,7 @@ if raw_users:
 CRAWLER_HEADLESS = os.getenv("RIL_CRAWLER_HEADLESS", "true").lower() == "true"
 CRAWLER_STEALTH = os.getenv("RIL_CRAWLER_STEALTH", "true").lower() == "true"
 CRAWLER_TIMEOUT_MS = int(os.getenv("RIL_CRAWLER_TIMEOUT_MS", "30000"))
+
+# Image extraction setting
+DISABLE_IMAGES = os.getenv("RIL_DISABLE_IMAGES", "false").lower() == "true"
+

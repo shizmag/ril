@@ -197,6 +197,23 @@ def get_article_content(article_id: int) -> str:
         with open(file_path, "r", encoding="utf-8") as f:
             content = f.read()
             
+        import re
+        # Clean content from base64/images for reading
+        if file_path.endswith(".md"):
+            # Strip reference definitions at the bottom
+            content = re.sub(r'(?m)^\[img_ref_\d+\].*$', '', content)
+            # Strip inline image links
+            content = re.sub(r'!\[.*?\]\[img_ref_\d+\]', '', content)
+            content = re.sub(r'!\[.*?\]\[.*?\]', '', content)
+            content = re.sub(r'!\[.*?\]\(.*?\)', '', content)
+            content = re.sub(r'\n{3,}', '\n\n', content).strip()
+        elif file_path.endswith(".html"):
+            from bs4 import BeautifulSoup
+            soup = BeautifulSoup(content, "lxml")
+            for img in soup.find_all("img"):
+                img.decompose()
+            content = str(soup)
+            
         return (
             f"--- TITLE: {article['title']} ---\n"
             f"--- URL: {article['url']} ---\n"

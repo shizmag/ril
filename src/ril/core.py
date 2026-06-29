@@ -133,7 +133,7 @@ async def process_url(
                 else:
                     pdf_title = "PDF Document"
                     
-            if images:
+            if images and not config.DISABLE_IMAGES:
                 image_refs = {}
                 for idx, (img_name, img_obj) in enumerate(images.items()):
                     ref_id = f"img_ref_{idx}"
@@ -158,6 +158,10 @@ async def process_url(
                 pdf_markdown += "\n\n"
                 for ref_id, b64_uri in image_refs.items():
                     pdf_markdown += f"[{ref_id}]: {b64_uri}\n"
+            else:
+                # Strip all markdown image tags
+                pdf_markdown = re.sub(r'!\[.*?\]\(.*?\)', '', pdf_markdown)
+                pdf_markdown = re.sub(r'!\[.*?\]\[.*?\]', '', pdf_markdown)
                     
         except Exception as e:
             logger.error(f"Error converting PDF via marker-pdf: {e}")
@@ -182,7 +186,14 @@ async def process_url(
         with open(file_path, "w", encoding="utf-8") as f:
             f.write(pdf_markdown)
             
-        search_text = re.sub(r'[*#_`\[\]\-!]', ' ', pdf_markdown)
+        # Clean pdf_markdown from images for search indexing and word counting
+        clean_pdf_markdown = pdf_markdown
+        clean_pdf_markdown = re.sub(r'(?m)^\[img_ref_\d+\].*$', '', clean_pdf_markdown)
+        clean_pdf_markdown = re.sub(r'!\[.*?\]\[img_ref_\d+\]', '', clean_pdf_markdown)
+        clean_pdf_markdown = re.sub(r'!\[.*?\]\[.*?\]', '', clean_pdf_markdown)
+        clean_pdf_markdown = re.sub(r'!\[.*?\]\(.*?\)', '', clean_pdf_markdown)
+        
+        search_text = re.sub(r'[*#_`\[\]\-!]', ' ', clean_pdf_markdown)
         word_count = len(re.findall(r'\w+', search_text))
         char_count = len(search_text)
         
@@ -234,10 +245,20 @@ async def process_url(
         else:
             with open(file_path, "w", encoding="utf-8") as f:
                 f.write(content)
+                
+        # Save clean HTML source for future conversion/export
+        try:
+            clean_html_path = file_path.with_suffix('.html_clean')
+            with open(clean_html_path, "w", encoding="utf-8") as f:
+                f.write(clean_html)
+        except Exception as e:
+            logger.error(f"Failed to save clean html: {e}")
             
         # Extract plain text for word counting and search indexing
         from bs4 import BeautifulSoup
         search_soup = BeautifulSoup(clean_html, "lxml")
+        for tag in search_soup.find_all(["script", "style", "svg", "img"]):
+            tag.decompose()
         search_text = search_soup.get_text(separator=" ")
         
         # Calculate word and char count based on plain text
@@ -348,3 +369,148 @@ def reset_library() -> None:
                     logger.error(f"Error deleting directory {item}: {e}")
     except Exception as e:
         logger.error(f"Error resetting files: {e}")
+
+def md_to_html_fallback(md_content: str, title: str) -> str:
+    lines = md_content.split('\n')
+    html_lines = []
+    in_code = False
+    in_list = False
+    for line in lines:
+        line_strip = line.strip()
+        if line_strip.startswith('```'):
+            if in_code:
+                html_lines.append('</pre>')
+                in_code = False
+            else:
+                html_lines.append('<pre><code>')
+                in_code = True
+            continue
+            
+        if in_code:
+            html_lines.append(line)
+            continue
+            
+        if line_strip.startswith('#'):
+            level = len(line) - len(line.lstrip('#'))
+            header_text = line.lstrip('#').strip()
+            html_lines.append(f'<h{level}>{header_text}</h{level}>')
+            continue
+            
+        if line_strip.startswith('* ') or line_strip.startswith('- '):
+            if not in_list:
+                html_lines.append('<ul>')
+                in_list = True
+            html_lines.append(f'<li>{line_strip[2:]}</li>')
+            continue
+        else:
+            if in_list:
+                html_lines.append('</ul>')
+                in_list = False
+                
+        if line_strip == '':
+            html_lines.append('<br/>')
+        else:
+            html_lines.append(f'<p>{line_strip}</p>')
+            
+    if in_list:
+        html_lines.append('</ul>')
+    if in_code:
+        html_lines.append('</pre>')
+        
+    body = '\n'.join(html_lines)
+    return f"<html><head><title>{title}</title></head><body>{body}</body></html>"
+
+async def export_article(article_id: int, export_format: str) -> Dict[str, Any]:
+    article = db.get_article(article_id)
+    if not article:
+        raise ValueError(f"Article with ID {article_id} not found")
+
+    original_file_path = Path(article["file_path"])
+    target_ext = f".{export_format.lower()}"
+    target_file_path = original_file_path.with_suffix(target_ext)
+    
+    # If the file already exists, we reuse it (cache)
+    if target_file_path.exists():
+        return {
+            "article_id": article_id,
+            "title": article["title"],
+            "format": export_format,
+            "file_path": str(target_file_path),
+            "filename": target_file_path.name,
+            "word_count": article["word_count"],
+            "status": article["status"],
+            "rating": article["rating"],
+            "tags": article["tags"]
+        }
+        
+    # If not exists, generate it
+    clean_html_path = original_file_path.with_suffix('.html_clean')
+    
+    html_content = ""
+    base_url = article["url"]
+    article_slug = original_file_path.stem
+    
+    if clean_html_path.exists():
+        with open(clean_html_path, "r", encoding="utf-8") as f:
+            html_content = f.read()
+    else:
+        # Fallback for old files or PDFs
+        if original_file_path.suffix == ".md":
+            md_content = ""
+            if original_file_path.exists():
+                with open(original_file_path, "r", encoding="utf-8", errors="ignore") as f:
+                    md_content = f.read()
+            html_content = md_to_html_fallback(md_content, article["title"])
+        elif original_file_path.suffix == ".html":
+            if original_file_path.exists():
+                with open(original_file_path, "r", encoding="utf-8", errors="ignore") as f:
+                    html_content = f.read()
+        else:
+            # Re-fetch as a last resort
+            url_lower = base_url.lower()
+            is_pdf = url_lower.split('?')[0].endswith('.pdf') or '/pdf/' in url_lower
+            if not is_pdf:
+                html = await fetch_html(base_url)
+                _, html_content = extract_article(html)
+                try:
+                    with open(clean_html_path, "w", encoding="utf-8") as f:
+                        f.write(html_content)
+                except Exception as e:
+                    logger.error(f"Failed to save clean html: {e}")
+            else:
+                raise ValueError("Cannot convert PDF without original file or markdown source")
+
+    # Convert HTML content to target format
+    fmt = export_format.lower()
+    if fmt == "epub":
+        from ril.converters import EPUBConverter
+        converter = EPUBConverter()
+        content = await converter.convert(html_content, base_url, article_slug)
+        with open(target_file_path, "wb") as f:
+            f.write(content)
+    elif fmt == "html":
+        from ril.converters import HTMLConverter
+        converter = HTMLConverter()
+        content = await converter.convert(html_content, base_url, article_slug)
+        with open(target_file_path, "w", encoding="utf-8") as f:
+            f.write(content)
+    elif fmt == "markdown":
+        from ril.converters import MarkdownConverter
+        converter = MarkdownConverter()
+        content = await converter.convert(html_content, base_url, article_slug)
+        with open(target_file_path, "w", encoding="utf-8") as f:
+            f.write(content)
+    else:
+        raise ValueError(f"Unsupported export format: {export_format}")
+        
+    return {
+        "article_id": article_id,
+        "title": article["title"],
+        "format": export_format,
+        "file_path": str(target_file_path),
+        "filename": target_file_path.name,
+        "word_count": article["word_count"],
+        "status": article["status"],
+        "rating": article["rating"],
+        "tags": article["tags"]
+    }

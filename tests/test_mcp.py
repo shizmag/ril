@@ -146,9 +146,15 @@ def test_mcp_get_article_content(setup_test_environment):
     library_dir = setup_test_environment["library_dir"]
     file_path = library_dir / "article.md"
     
-    # Write a dummy file to tests sandbox
+    # Write a dummy file with base64 images and references to tests sandbox
     with open(file_path, "w", encoding="utf-8") as f:
-        f.write("# Dummy Content\nThis is a mock article file.")
+        f.write(
+            "# Dummy Content\n"
+            "This is a mock article file with inline images:\n"
+            "![alt][img_ref_0]\n"
+            "And standard link: ![alt2](https://example.com/img.png)\n\n"
+            "[img_ref_0]: data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAA\n"
+        )
         
     art_id = db.add_article(
         url="https://example.com/content",
@@ -162,6 +168,11 @@ def test_mcp_get_article_content(setup_test_environment):
     content_resp = get_article_content(art_id)
     assert "Dummy Content" in content_resp
     assert "Content Article" in content_resp
+    
+    # Assert images/base64 are stripped for reading
+    assert "data:image/png" not in content_resp
+    assert "img_ref_0" not in content_resp
+    assert "https://example.com/img.png" not in content_resp
     
     # Missing file check
     db.add_article(

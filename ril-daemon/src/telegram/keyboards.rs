@@ -26,26 +26,22 @@ pub fn hub_keyboard() -> InlineKeyboardMarkup {
 
 pub fn article_card_keyboard(art_id: i64, status: &str, url: &str) -> InlineKeyboardMarkup {
     let status_btn = if status == "read" {
-        InlineKeyboardButton::callback("📖 В непрочитанные", format!("unread:{}", art_id))
+        InlineKeyboardButton::callback("📖 Отметить непрочитанным", format!("unread:{}", art_id))
     } else {
-        InlineKeyboardButton::callback("✅ Прочитано", format!("read:{}", art_id))
+        InlineKeyboardButton::callback("✅ Отметить прочитанным", format!("read:{}", art_id))
     };
+
+    let original_url = url.parse().unwrap_or_else(|_| "https://google.com".parse().unwrap());
 
     InlineKeyboardMarkup::new(vec![
         vec![
-            InlineKeyboardButton::url(
-                "📄 Открыть оригинал",
-                url.parse()
-                    .unwrap_or_else(|_| "https://google.com".parse().unwrap()),
-            ),
-            InlineKeyboardButton::callback("📥 Скачать файл", format!("get_file:{}", art_id)),
+            InlineKeyboardButton::callback("📥 Скачать", format!("get_file:{}", art_id)),
+            InlineKeyboardButton::url("📄 Читать", original_url),
         ],
+        vec![status_btn],
         vec![
-            status_btn,
             InlineKeyboardButton::callback("🏷 Теги", format!("art_tags:{}", art_id)),
-        ],
-        vec![
-            InlineKeyboardButton::callback("⭐ Оценить", format!("art_rate:{}", art_id)),
+            InlineKeyboardButton::callback("⭐ Оценка", format!("art_rate:{}", art_id)),
             InlineKeyboardButton::callback("💬 Комментарий", format!("art_comm:{}", art_id)),
         ],
         vec![
@@ -145,17 +141,13 @@ pub fn articles_list_keyboard(
     let mut rows = vec![];
     for a in articles {
         let mut label = a.title.clone();
-        if label.chars().count() > 18 {
-            label = label.chars().take(15).collect::<String>() + "...";
+        if label.chars().count() > 30 {
+            label = label.chars().take(27).collect::<String>() + "...";
         }
         rows.push(vec![
             InlineKeyboardButton::callback(
                 format!("📄 [{}] {}", a.id, label),
                 format!("art:{}", a.id),
-            ),
-            InlineKeyboardButton::callback(
-                "📥 Скачать",
-                format!("get_file:{}", a.id),
             ),
         ]);
     }
@@ -177,67 +169,104 @@ pub fn articles_list_keyboard(
 }
 
 pub fn search_menu_keyboard(session: &SearchSession) -> InlineKeyboardMarkup {
-    let query_label = match &session.query {
-        Some(q) => format!("🔎 Запрос: \"{}\"", q),
-        None => "🔎 Запрос: [не задан]".to_string(),
-    };
+    let mut rows = vec![];
 
-    let domain_label = match &session.domain {
-        Some(d) => format!("🌐 Источник: {}", d),
-        None => "🌐 Источник: [все]".to_string(),
-    };
-
-    let tag_label = match &session.tag {
-        Some(t) => format!("🏷 Тег: #{}", t),
-        None => "🏷 Тег: [все]".to_string(),
-    };
-
-    let status_label = match &session.status {
-        Some(s) => {
-            if s == "read" {
-                "✅ Только прочитанные"
-            } else {
-                "📖 Только непрочитанные"
-            }
+    // Query Row
+    match &session.query {
+        Some(q) => {
+            rows.push(vec![
+                InlineKeyboardButton::callback(format!("🔎 Запрос: \"{}\"", q), "sf_query"),
+                InlineKeyboardButton::callback("✕", "sf_clear_query"),
+            ]);
         }
-        None => "📝 Любой статус",
-    };
+        None => {
+            rows.push(vec![
+                InlineKeyboardButton::callback("🔎 Запрос: все", "sf_query"),
+            ]);
+        }
+    }
 
-    let rating_label = match &session.rating {
-        Some(r) => format!("⭐ Оценка: {}", r),
-        None => "⭐ Оценка: [любая]".to_string(),
-    };
-
-    let date_label = match &session.date_added {
+    // Domain (Source) and Tag Row
+    let mut row2 = vec![];
+    match &session.domain {
         Some(d) => {
-            if d == "today" {
-                "📅 За сегодня"
-            } else if d == "week" {
-                "📅 За неделю"
+            row2.push(InlineKeyboardButton::callback(format!("🌐 Источник: {}", d), "sf_domain"));
+            row2.push(InlineKeyboardButton::callback("✕", "sf_clear_domain"));
+        }
+        None => {
+            row2.push(InlineKeyboardButton::callback("🌐 Источник: все", "sf_domain"));
+        }
+    }
+    match &session.tag {
+        Some(t) => {
+            row2.push(InlineKeyboardButton::callback(format!("🏷 Тег: #{}", t), "sf_tag"));
+            row2.push(InlineKeyboardButton::callback("✕", "sf_clear_tag"));
+        }
+        None => {
+            row2.push(InlineKeyboardButton::callback("🏷 Тег: все", "sf_tag"));
+        }
+    }
+    rows.push(row2);
+
+    // Status and Rating Row
+    let mut row3 = vec![];
+    match &session.status {
+        Some(s) => {
+            let label = if s == "read" { "✅ прочитанные" } else { "📖 непрочитанные" };
+            row3.push(InlineKeyboardButton::callback(format!("Статус: {}", label), "sf_status"));
+            row3.push(InlineKeyboardButton::callback("✕", "sf_clear_status"));
+        }
+        None => {
+            row3.push(InlineKeyboardButton::callback("Статус: все", "sf_status"));
+        }
+    }
+    match &session.rating {
+        Some(r) => {
+            row3.push(InlineKeyboardButton::callback(format!("⭐ Оценка: {}", r), "sf_rating"));
+            row3.push(InlineKeyboardButton::callback("✕", "sf_clear_rating"));
+        }
+        None => {
+            if session.no_rating {
+                row3.push(InlineKeyboardButton::callback("⭐ Оценка: без оценки", "sf_rating"));
+                row3.push(InlineKeyboardButton::callback("✕", "sf_clear_rating"));
             } else {
-                "📅 За месяц"
+                row3.push(InlineKeyboardButton::callback("⭐ Оценка: любая", "sf_rating"));
             }
         }
-        None => "📅 За всё время",
-    };
+    }
+    rows.push(row3);
 
-    InlineKeyboardMarkup::new(vec![
-        vec![InlineKeyboardButton::callback(query_label, "sf_query")],
-        vec![
-            InlineKeyboardButton::callback(domain_label, "sf_domain"),
-            InlineKeyboardButton::callback(tag_label, "sf_tag"),
-        ],
-        vec![
-            InlineKeyboardButton::callback(status_label, "sf_status"),
-            InlineKeyboardButton::callback(rating_label, "sf_rating"),
-        ],
-        vec![InlineKeyboardButton::callback(date_label, "sf_date")],
-        vec![
-            InlineKeyboardButton::callback("❌ Сбросить", "sf_reset"),
-            InlineKeyboardButton::callback("🚀 Искать", "sf_run:0"),
-        ],
-        vec![InlineKeyboardButton::callback("🏠 В хаб", "hub")],
-    ])
+    // Date Row
+    match &session.date_added {
+        Some(d) => {
+            let label = if d == "today" {
+                "за сегодня"
+            } else if d == "week" {
+                "за неделю"
+            } else {
+                "за месяц"
+            };
+            rows.push(vec![
+                InlineKeyboardButton::callback(format!("📅 Дата: {}", label), "sf_date"),
+                InlineKeyboardButton::callback("✕", "sf_clear_date"),
+            ]);
+        }
+        None => {
+            rows.push(vec![
+                InlineKeyboardButton::callback("📅 Дата: всё время", "sf_date"),
+            ]);
+        }
+    }
+
+    // Action buttons
+    rows.push(vec![
+        InlineKeyboardButton::callback("❌ Сбросить всё", "sf_reset"),
+        InlineKeyboardButton::callback("🚀 Искать", "sf_run:0"),
+    ]);
+
+    rows.push(vec![InlineKeyboardButton::callback("🏠 В хаб", "hub")]);
+
+    InlineKeyboardMarkup::new(rows)
 }
 
 pub fn search_status_select_keyboard() -> InlineKeyboardMarkup {
@@ -400,4 +429,32 @@ pub fn back_to_hub_keyboard() -> InlineKeyboardMarkup {
         "🏠 В хаб",
         "hub",
     )]])
+}
+
+pub fn pending_input_keyboard(art_id: i64) -> InlineKeyboardMarkup {
+    let mut rows = vec![];
+    if art_id > 0 {
+        rows.push(vec![
+            InlineKeyboardButton::callback("❌ Отмена", "hub"),
+            InlineKeyboardButton::callback("🔙 Назад к материалу", format!("art:{}", art_id)),
+        ]);
+    } else {
+        rows.push(vec![
+            InlineKeyboardButton::callback("❌ Отмена", "hub"),
+        ]);
+    }
+    InlineKeyboardMarkup::new(rows)
+}
+
+pub fn import_results_keyboard(has_errors: bool) -> InlineKeyboardMarkup {
+    let mut row = vec![
+        InlineKeyboardButton::callback("Открыть последние", "open_last_imported"),
+    ];
+    if has_errors {
+        row.push(InlineKeyboardButton::callback("Показать ошибки", "show_import_errors"));
+    }
+    InlineKeyboardMarkup::new(vec![
+        row,
+        vec![InlineKeyboardButton::callback("🏠 В хаб", "hub")],
+    ])
 }

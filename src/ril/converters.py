@@ -448,7 +448,11 @@ def preprocess_html(html: str) -> str:
     soup = BeautifulSoup(html, "lxml")
     
     # 1. Strip useless tags completely
-    for tag in soup.find_all(["script", "style", "meta", "noscript", "svg"]):
+    useless_tags = ["script", "style", "meta", "noscript", "svg"]
+    if config.DISABLE_IMAGES:
+        useless_tags.append("img")
+        
+    for tag in soup.find_all(useless_tags):
         tag.decompose()
         
     # 1.1 Strip cookie consent banners / CMP overlays (e.g. OneTrust, Didomi, Cookiebot, etc.)

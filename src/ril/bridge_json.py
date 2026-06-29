@@ -71,6 +71,11 @@ async def handle_reset_library(args):
     core.reset_library()
     return {"success": True}
 
+async def handle_export_article(args):
+    article_id = int(args.get("article_id"))
+    export_format = args.get("format")
+    return await core.export_article(article_id, export_format)
+
 async def handle_search_articles_advanced(args):
     query = args.get("query")
     status = args.get("status")
@@ -185,7 +190,8 @@ async def main():
             "get_sources_stats": handle_get_sources_stats,
             "get_tags_stats": handle_get_tags_stats,
             "get_ratings_stats": handle_get_ratings_stats,
-            "get_dynamics_stats": handle_get_dynamics_stats
+            "get_dynamics_stats": handle_get_dynamics_stats,
+            "export_article": handle_export_article
         }
         
         if command not in commands:

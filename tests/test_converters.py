@@ -534,6 +534,40 @@ async def test_page_span_removal(setup_test_environment):
     assert "preserved span" in result
 
 
+@pytest.mark.asyncio
+async def test_disable_images_setting(monkeypatch):
+    from ril.converters import MarkdownConverter, HTMLConverter
+    from ril import config
+    
+    monkeypatch.setattr(config, "DISABLE_IMAGES", True)
+    
+    html = (
+        "<html>"
+        "<body>"
+        "  <h1>Title</h1>"
+        "  <p>Here is an image:</p>"
+        "  <img src='https://example.com/logo.jpg' alt='Logo' />"
+        "  <p>And a base64 image:</p>"
+        "  <img src='data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==' alt='Base64' />"
+        "</body>"
+        "</html>"
+    )
+    
+    # Test MarkdownConverter with DISABLE_IMAGES=True
+    md_converter = MarkdownConverter()
+    md_result = await md_converter.convert(html, "https://example.com", "test-disabled-images")
+    assert "Logo" not in md_result
+    assert "Base64" not in md_result
+    assert "img_ref" not in md_result
+    
+    # Test HTMLConverter with DISABLE_IMAGES=True
+    html_converter = HTMLConverter()
+    html_result = await html_converter.convert(html, "https://example.com", "test-disabled-images")
+    assert "logo.jpg" not in html_result
+    assert "data:image/png;base64" not in html_result
+    assert "<img" not in html_result
+
+
 
 
 
