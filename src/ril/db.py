@@ -13,8 +13,11 @@ def get_nlp():
         try:
             _nlp = spacy.load("en_core_web_sm", disable=["parser", "ner"])
         except OSError:
+            import contextlib
+            import sys
             from spacy.cli import download
-            download("en_core_web_sm")
+            with contextlib.redirect_stdout(sys.stderr):
+                download("en_core_web_sm")
             _nlp = spacy.load("en_core_web_sm", disable=["parser", "ner"])
     return _nlp
 

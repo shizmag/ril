@@ -9,6 +9,15 @@ async def test_fetch_html_success(mocker):
     mock_page.content = AsyncMock(return_value="<html>Mocked content</html>")
     mock_page.goto = AsyncMock()
     
+    # Configure page.locator to return a mock locator that has async methods
+    mock_locator = MagicMock()
+    mock_locator.count = AsyncMock(return_value=0)
+    mock_locator.first = MagicMock()
+    mock_locator.first.is_visible = AsyncMock(return_value=False)
+    mock_locator.first.click = AsyncMock()
+    mock_locator.nth = MagicMock(return_value=mock_locator)
+    mock_page.locator = MagicMock(return_value=mock_locator)
+    
     # Mock Context
     mock_context = AsyncMock()
     mock_context.new_page = AsyncMock(return_value=mock_page)
@@ -56,6 +65,15 @@ async def test_fetch_html_fallback(mocker):
     
     # Mock page.goto to throw on call
     mock_page.goto = AsyncMock(side_effect=Exception("Load Timeout"))
+    
+    # Configure page.locator to return a mock locator that has async methods
+    mock_locator = MagicMock()
+    mock_locator.count = AsyncMock(return_value=0)
+    mock_locator.first = MagicMock()
+    mock_locator.first.is_visible = AsyncMock(return_value=False)
+    mock_locator.first.click = AsyncMock()
+    mock_locator.nth = MagicMock(return_value=mock_locator)
+    mock_page.locator = MagicMock(return_value=mock_locator)
     
     # Mock Context & Browser
     mock_context = AsyncMock()
