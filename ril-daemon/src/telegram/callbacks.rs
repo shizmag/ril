@@ -11,9 +11,7 @@ pub async fn handle_callback_query(
 ) -> ResponseResult<()> {
     match handle_callback_query_inner(bot, q, state).await {
         Ok(()) => Ok(()),
-        Err(teloxide::RequestError::Api(teloxide::ApiError::MessageNotModified)) => {
-            Ok(())
-        }
+        Err(teloxide::RequestError::Api(teloxide::ApiError::MessageNotModified)) => Ok(()),
         Err(e) => Err(e),
     }
 }
@@ -59,7 +57,15 @@ pub async fn handle_callback_query_inner(
         if parts.len() == 3 {
             let status = parts[1];
             let page: i64 = parts[2].parse().unwrap_or(0);
-            super::helpers::show_articles_list_screen(bot.clone(), msg.chat.id, state.clone(), user.id, status, page).await?;
+            super::helpers::show_articles_list_screen(
+                bot.clone(),
+                msg.chat.id,
+                state.clone(),
+                user.id,
+                status,
+                page,
+            )
+            .await?;
         }
     } else if data.starts_with("get_file:") {
         let id: i64 = data
@@ -87,8 +93,16 @@ pub async fn handle_callback_query_inner(
                         export_res.format.to_uppercase(),
                         export_res.word_count,
                         (export_res.word_count as f64 / 200.0).ceil() as i64,
-                        if export_res.status == "read" { "✅" } else { "📖" },
-                        if export_res.status == "read" { "Прочитано" } else { "Не прочитано" },
+                        if export_res.status == "read" {
+                            "✅"
+                        } else {
+                            "📖"
+                        },
+                        if export_res.status == "read" {
+                            "Прочитано"
+                        } else {
+                            "Не прочитано"
+                        },
                         match export_res.rating {
                             Some(r) => "⭐".repeat(r as usize),
                             None => "нет оценки".to_string(),
@@ -96,20 +110,37 @@ pub async fn handle_callback_query_inner(
                     );
                     let markup = keyboards::document_keyboard(id, &export_res.status);
                     if let Some(state_msg_id) = state.clear_state_message(user.id).await {
-                        let _ = bot.delete_message(msg.chat.id, teloxide::types::MessageId(state_msg_id)).await;
+                        let _ = bot
+                            .delete_message(msg.chat.id, teloxide::types::MessageId(state_msg_id))
+                            .await;
                     }
-                    let sent = bot.send_document(msg.chat.id, doc)
+                    let sent = bot
+                        .send_document(msg.chat.id, doc)
                         .caption(caption)
                         .reply_markup(markup)
                         .parse_mode(teloxide::types::ParseMode::Html)
                         .await?;
                     state.set_state_message(user.id, sent.id.0).await;
                 } else {
-                    super::helpers::show_error_state(bot.clone(), msg.chat.id, state.clone(), user.id, "Файл не найден на диске.").await?;
+                    super::helpers::show_error_state(
+                        bot.clone(),
+                        msg.chat.id,
+                        state.clone(),
+                        user.id,
+                        "Файл не найден на диске.",
+                    )
+                    .await?;
                 }
             }
             Err(e) => {
-                super::helpers::show_error_state(bot.clone(), msg.chat.id, state.clone(), user.id, &format!("Ошибка при экспорте статьи: {}", e)).await?;
+                super::helpers::show_error_state(
+                    bot.clone(),
+                    msg.chat.id,
+                    state.clone(),
+                    user.id,
+                    &format!("Ошибка при экспорте статьи: {}", e),
+                )
+                .await?;
             }
         }
     } else if data.starts_with("toggle_doc:") {
@@ -127,15 +158,19 @@ pub async fn handle_callback_query_inner(
                 "read"
             };
             custom_ack = Some("Статус обновлен".to_string());
-            
-            let status_text = if new_status == "read" { "Прочитано" } else { "Не прочитано" };
+
+            let status_text = if new_status == "read" {
+                "Прочитано"
+            } else {
+                "Не прочитано"
+            };
             let read_time = (content.article.word_count as f64 / 200.0).ceil() as i64;
             let rating_stars = match content.article.rating {
                 Some(r) => "⭐".repeat(r as usize),
                 None => "нет оценки".to_string(),
             };
             let status_emoji = if new_status == "read" { "✅" } else { "📖" };
-            
+
             let caption = format!(
                 "📄 <b>{}</b>\n\n\
                  <b>Слов:</b> {} (~{} мин. чтения)\n\
@@ -151,7 +186,8 @@ pub async fn handle_callback_query_inner(
                 content.article.id
             );
             let markup = keyboards::document_keyboard(id, new_status);
-            let _ = bot.edit_message_caption(msg.chat.id, msg.id)
+            let _ = bot
+                .edit_message_caption(msg.chat.id, msg.id)
                 .caption(caption)
                 .reply_markup(markup)
                 .parse_mode(teloxide::types::ParseMode::Html)
@@ -176,13 +212,21 @@ pub async fn handle_callback_query_inner(
             let val: i32 = parts[2].parse().unwrap_or(0);
             state.bridge.rate_article(id, Some(val)).await.tg_err()?;
             custom_ack = Some("Оценка выставлена".to_string());
-            
+
             let stars = "⭐".repeat(val as usize);
             if let Ok(content) = state.bridge.get_article_content(id).await {
                 let read_time = (content.article.word_count as f64 / 200.0).ceil() as i64;
-                let status_emoji = if content.article.status == "read" { "✅" } else { "📖" };
-                let status_text = if content.article.status == "read" { "Прочитано" } else { "Не прочитано" };
-                
+                let status_emoji = if content.article.status == "read" {
+                    "✅"
+                } else {
+                    "📖"
+                };
+                let status_text = if content.article.status == "read" {
+                    "Прочитано"
+                } else {
+                    "Не прочитано"
+                };
+
                 let caption = format!(
                     "📄 <b>{}</b>\n\n\
                      <b>Слов:</b> {} (~{} мин. чтения)\n\
@@ -198,7 +242,8 @@ pub async fn handle_callback_query_inner(
                     content.article.id
                 );
                 let markup = keyboards::document_keyboard(id, &content.article.status);
-                let _ = bot.edit_message_caption(msg.chat.id, msg.id)
+                let _ = bot
+                    .edit_message_caption(msg.chat.id, msg.id)
                     .caption(caption)
                     .reply_markup(markup)
                     .parse_mode(teloxide::types::ParseMode::Html)
@@ -211,7 +256,14 @@ pub async fn handle_callback_query_inner(
             .nth(1)
             .and_then(|s| s.parse().ok())
             .unwrap_or(0);
-        super::helpers::show_article_card_screen(bot.clone(), msg.chat.id, state.clone(), user.id, id).await?;
+        super::helpers::show_article_card_screen(
+            bot.clone(),
+            msg.chat.id,
+            state.clone(),
+            user.id,
+            id,
+        )
+        .await?;
     } else if data.starts_with("read:") {
         let id: i64 = data
             .split(':')
@@ -220,7 +272,14 @@ pub async fn handle_callback_query_inner(
             .unwrap_or(0);
         state.bridge.mark_article_read(id).await.tg_err()?;
         custom_ack = Some("Статус обновлен".to_string());
-        super::helpers::show_article_card_screen(bot.clone(), msg.chat.id, state.clone(), user.id, id).await?;
+        super::helpers::show_article_card_screen(
+            bot.clone(),
+            msg.chat.id,
+            state.clone(),
+            user.id,
+            id,
+        )
+        .await?;
     } else if data.starts_with("unread:") {
         let id: i64 = data
             .split(':')
@@ -229,7 +288,14 @@ pub async fn handle_callback_query_inner(
             .unwrap_or(0);
         state.bridge.mark_article_unread(id).await.tg_err()?;
         custom_ack = Some("Статус обновлен".to_string());
-        super::helpers::show_article_card_screen(bot.clone(), msg.chat.id, state.clone(), user.id, id).await?;
+        super::helpers::show_article_card_screen(
+            bot.clone(),
+            msg.chat.id,
+            state.clone(),
+            user.id,
+            id,
+        )
+        .await?;
     } else if data.starts_with("art_del:") {
         let id: i64 = data
             .split(':')
@@ -247,7 +313,15 @@ pub async fn handle_callback_query_inner(
         custom_ack = Some("Материал удален".to_string());
         let text = "🗑 <b>Материал успешно удален.</b>";
         let markup = keyboards::back_to_hub_keyboard();
-        super::helpers::show_state_screen(bot.clone(), msg.chat.id, state.clone(), user.id, text.to_string(), Some(markup)).await?;
+        super::helpers::show_state_screen(
+            bot.clone(),
+            msg.chat.id,
+            state.clone(),
+            user.id,
+            text.to_string(),
+            Some(markup),
+        )
+        .await?;
     } else if data.starts_with("art_rate:") {
         let id: i64 = data
             .split(':')
@@ -256,7 +330,15 @@ pub async fn handle_callback_query_inner(
             .unwrap_or(0);
         let text = "⭐ <b>Пожалуйста, выберите оценку для материала:</b>";
         let markup = keyboards::rating_keyboard(id);
-        super::helpers::show_state_screen(bot.clone(), msg.chat.id, state.clone(), user.id, text.to_string(), Some(markup)).await?;
+        super::helpers::show_state_screen(
+            bot.clone(),
+            msg.chat.id,
+            state.clone(),
+            user.id,
+            text.to_string(),
+            Some(markup),
+        )
+        .await?;
     } else if data.starts_with("rate_set:") {
         let parts: Vec<&str> = data.split(':').collect();
         if parts.len() == 3 {
@@ -272,9 +354,24 @@ pub async fn handle_callback_query_inner(
                     .await;
                 let text = "⭐ <b>Оценка успешно установлена!</b>\n\nНапишите текстовый комментарий к этому материалу и отправьте его в ответном сообщении. Если комментарий не нужен, просто нажмите кнопку ниже.";
                 let markup = keyboards::back_to_article_keyboard(id);
-                super::helpers::show_state_screen(bot.clone(), msg.chat.id, state.clone(), user.id, text.to_string(), Some(markup)).await?;
+                super::helpers::show_state_screen(
+                    bot.clone(),
+                    msg.chat.id,
+                    state.clone(),
+                    user.id,
+                    text.to_string(),
+                    Some(markup),
+                )
+                .await?;
             } else {
-                super::helpers::show_article_card_screen(bot.clone(), msg.chat.id, state.clone(), user.id, id).await?;
+                super::helpers::show_article_card_screen(
+                    bot.clone(),
+                    msg.chat.id,
+                    state.clone(),
+                    user.id,
+                    id,
+                )
+                .await?;
             }
         }
     } else if data.starts_with("art_comm:") {
@@ -295,7 +392,15 @@ pub async fn handle_callback_query_inner(
             .await;
         let text = "💬 <b>Пожалуйста, отправьте ваш комментарий следующим сообщением:</b>";
         let markup = keyboards::back_to_article_keyboard(id);
-        super::helpers::show_state_screen(bot.clone(), msg.chat.id, state.clone(), user.id, text.to_string(), Some(markup)).await?;
+        super::helpers::show_state_screen(
+            bot.clone(),
+            msg.chat.id,
+            state.clone(),
+            user.id,
+            text.to_string(),
+            Some(markup),
+        )
+        .await?;
     } else if data.starts_with("comm_del:") {
         let id: i64 = data
             .split(':')
@@ -304,7 +409,14 @@ pub async fn handle_callback_query_inner(
             .unwrap_or(0);
         state.bridge.set_article_comment(id, None).await.tg_err()?;
         custom_ack = Some("Комментарий удален".to_string());
-        super::helpers::show_article_card_screen(bot.clone(), msg.chat.id, state.clone(), user.id, id).await?;
+        super::helpers::show_article_card_screen(
+            bot.clone(),
+            msg.chat.id,
+            state.clone(),
+            user.id,
+            id,
+        )
+        .await?;
     } else if data.starts_with("art_tags:") {
         let id: i64 = data
             .split(':')
@@ -323,7 +435,15 @@ pub async fn handle_callback_query_inner(
             .await;
         let text = "🏷 <b>Пожалуйста, отправьте название тега (или несколько через запятую):</b>";
         let markup = keyboards::back_to_article_keyboard(id);
-        super::helpers::show_state_screen(bot.clone(), msg.chat.id, state.clone(), user.id, text.to_string(), Some(markup)).await?;
+        super::helpers::show_state_screen(
+            bot.clone(),
+            msg.chat.id,
+            state.clone(),
+            user.id,
+            text.to_string(),
+            Some(markup),
+        )
+        .await?;
     } else if data.starts_with("tag_rem:") {
         let parts: Vec<&str> = data.splitn(3, ':').collect();
         if parts.len() == 3 {
@@ -339,7 +459,14 @@ pub async fn handle_callback_query_inner(
             .nth(1)
             .and_then(|s| s.parse().ok())
             .unwrap_or(0);
-        super::helpers::show_tags_list_screen(bot.clone(), msg.chat.id, state.clone(), user.id, page).await?;
+        super::helpers::show_tags_list_screen(
+            bot.clone(),
+            msg.chat.id,
+            state.clone(),
+            user.id,
+            page,
+        )
+        .await?;
     } else if data.starts_with("stag:") {
         let parts: Vec<&str> = data.splitn(3, ':').collect();
         if parts.len() == 3 {
@@ -358,17 +485,29 @@ pub async fn handle_callback_query_inner(
         }
     } else if data.starts_with("stats:") {
         let section = data.split(':').nth(1).unwrap_or("overview");
-        super::helpers::show_stats_screen(bot.clone(), msg.chat.id, state.clone(), user.id, section).await?;
+        super::helpers::show_stats_screen(
+            bot.clone(),
+            msg.chat.id,
+            state.clone(),
+            user.id,
+            section,
+        )
+        .await?;
     } else if data == "settings" {
-        super::helpers::show_settings_screen(bot.clone(), msg.chat.id, state.clone(), user.id).await?;
+        super::helpers::show_settings_screen(bot.clone(), msg.chat.id, state.clone(), user.id)
+            .await?;
     } else if data.starts_with("set_fmt:") {
         let fmt_str = data.split(':').nth(1).unwrap_or("markdown");
         if let Ok(fmt) = fmt_str.parse::<crate::domain::SaveFormat>() {
             let mut map = state.user_formats.lock().await;
             map.insert(user.id, fmt);
-            custom_ack = Some(format!("Формат скачивания изменен на {}", fmt.to_string().to_uppercase()));
+            custom_ack = Some(format!(
+                "Формат скачивания изменен на {}",
+                fmt.to_string().to_uppercase()
+            ));
         }
-        super::helpers::show_settings_screen(bot.clone(), msg.chat.id, state.clone(), user.id).await?;
+        super::helpers::show_settings_screen(bot.clone(), msg.chat.id, state.clone(), user.id)
+            .await?;
     } else if data == "open_last_imported" {
         let ids = state.get_last_imported(user.id).await;
         let mut articles = vec![];
@@ -377,14 +516,17 @@ pub async fn handle_callback_query_inner(
                 articles.push(content.article);
             }
         }
-        let text = views::render_articles_list(
-            &articles,
-            "Последние добавленные материалы",
-            0,
-            1,
-        );
+        let text = views::render_articles_list(&articles, "Последние добавленные материалы", 0, 1);
         let markup = keyboards::articles_list_keyboard(&articles, None, None, "hub");
-        super::helpers::show_state_screen(bot.clone(), msg.chat.id, state.clone(), user.id, text, Some(markup)).await?;
+        super::helpers::show_state_screen(
+            bot.clone(),
+            msg.chat.id,
+            state.clone(),
+            user.id,
+            text,
+            Some(markup),
+        )
+        .await?;
     } else if data == "show_import_errors" {
         let errs = state.get_last_errors(user.id).await;
         let mut text = "⚠️ <b>Ошибки при последнем импорте:</b>\n\n".to_string();
@@ -396,33 +538,75 @@ pub async fn handle_callback_query_inner(
             }
         }
         let markup = keyboards::back_to_hub_keyboard();
-        super::helpers::show_state_screen(bot.clone(), msg.chat.id, state.clone(), user.id, text, Some(markup)).await?;
+        super::helpers::show_state_screen(
+            bot.clone(),
+            msg.chat.id,
+            state.clone(),
+            user.id,
+            text,
+            Some(markup),
+        )
+        .await?;
     } else if data == "reset_lib_prompt" {
         let text = "⚠️ <b>ВНИМАНИЕ!</b>\n\nЭто действие безвозвратно удалит ВСЕ сохраненные материалы, файлы и записи в базе данных.\n\nВы уверены?";
         let markup = keyboards::reset_lib_confirm_keyboard();
-        super::helpers::show_state_screen(bot.clone(), msg.chat.id, state.clone(), user.id, text.to_string(), Some(markup)).await?;
+        super::helpers::show_state_screen(
+            bot.clone(),
+            msg.chat.id,
+            state.clone(),
+            user.id,
+            text.to_string(),
+            Some(markup),
+        )
+        .await?;
     } else if data == "reset_lib_confirm" {
         state.bridge.reset_library().await.tg_err()?;
         custom_ack = Some("Библиотека сброшена".to_string());
         let text = "✅ <b>Библиотека полностью очищена.</b>";
         let markup = keyboards::back_to_hub_keyboard();
-        super::helpers::show_state_screen(bot.clone(), msg.chat.id, state.clone(), user.id, text.to_string(), Some(markup)).await?;
+        super::helpers::show_state_screen(
+            bot.clone(),
+            msg.chat.id,
+            state.clone(),
+            user.id,
+            text.to_string(),
+            Some(markup),
+        )
+        .await?;
     } else if data == "search" {
-        super::helpers::show_search_menu_screen(bot.clone(), msg.chat.id, state.clone(), user.id).await?;
+        super::helpers::show_search_menu_screen(bot.clone(), msg.chat.id, state.clone(), user.id)
+            .await?;
     } else if data == "sf_query" {
         state
             .set_pending_state(user.id, PendingState::WaitingForSearchQuery)
             .await;
         let text = "🔎 <b>Введите поисковый запрос (текст или ключевые слова):</b>";
         let markup = keyboards::back_to_article_keyboard(0);
-        super::helpers::show_state_screen(bot.clone(), msg.chat.id, state.clone(), user.id, text.to_string(), Some(markup)).await?;
+        super::helpers::show_state_screen(
+            bot.clone(),
+            msg.chat.id,
+            state.clone(),
+            user.id,
+            text.to_string(),
+            Some(markup),
+        )
+        .await?;
     } else if data == "sf_domain" {
         state
             .set_pending_state(user.id, PendingState::WaitingForFilterDomain)
             .await;
-        let text = "🌐 <b>Введите домен сайта для фильтрации (например, habr.com или medium.com):</b>";
+        let text =
+            "🌐 <b>Введите домен сайта для фильтрации (например, habr.com или medium.com):</b>";
         let markup = keyboards::back_to_article_keyboard(0);
-        super::helpers::show_state_screen(bot.clone(), msg.chat.id, state.clone(), user.id, text.to_string(), Some(markup)).await?;
+        super::helpers::show_state_screen(
+            bot.clone(),
+            msg.chat.id,
+            state.clone(),
+            user.id,
+            text.to_string(),
+            Some(markup),
+        )
+        .await?;
     } else if data == "sf_tag" {
         show_search_tag_select(bot.clone(), msg, state.clone()).await?;
     } else if data.starts_with("sft_select:") {
@@ -436,11 +620,20 @@ pub async fn handle_callback_query_inner(
                 };
             })
             .await;
-        super::helpers::show_search_menu_screen(bot.clone(), msg.chat.id, state.clone(), user.id).await?;
+        super::helpers::show_search_menu_screen(bot.clone(), msg.chat.id, state.clone(), user.id)
+            .await?;
     } else if data == "sf_status" {
         let text = "📝 <b>Выберите статус прочтения для фильтрации:</b>";
         let markup = keyboards::search_status_select_keyboard();
-        super::helpers::show_state_screen(bot.clone(), msg.chat.id, state.clone(), user.id, text.to_string(), Some(markup)).await?;
+        super::helpers::show_state_screen(
+            bot.clone(),
+            msg.chat.id,
+            state.clone(),
+            user.id,
+            text.to_string(),
+            Some(markup),
+        )
+        .await?;
     } else if data.starts_with("sfs_") {
         let val = data.strip_prefix("sfs_").unwrap_or("any");
         state
@@ -452,11 +645,20 @@ pub async fn handle_callback_query_inner(
                 };
             })
             .await;
-        super::helpers::show_search_menu_screen(bot.clone(), msg.chat.id, state.clone(), user.id).await?;
+        super::helpers::show_search_menu_screen(bot.clone(), msg.chat.id, state.clone(), user.id)
+            .await?;
     } else if data == "sf_rating" {
         let text = "⭐ <b>Выберите оценку для фильтрации:</b>";
         let markup = keyboards::search_rating_select_keyboard();
-        super::helpers::show_state_screen(bot.clone(), msg.chat.id, state.clone(), user.id, text.to_string(), Some(markup)).await?;
+        super::helpers::show_state_screen(
+            bot.clone(),
+            msg.chat.id,
+            state.clone(),
+            user.id,
+            text.to_string(),
+            Some(markup),
+        )
+        .await?;
     } else if data.starts_with("sfr_") {
         let val = data.strip_prefix("sfr_").unwrap_or("any");
         state
@@ -473,11 +675,20 @@ pub async fn handle_callback_query_inner(
                 }
             })
             .await;
-        super::helpers::show_search_menu_screen(bot.clone(), msg.chat.id, state.clone(), user.id).await?;
+        super::helpers::show_search_menu_screen(bot.clone(), msg.chat.id, state.clone(), user.id)
+            .await?;
     } else if data == "sf_date" {
         let text = "📅 <b>Выберите интервал добавления:</b>";
         let markup = keyboards::search_date_select_keyboard();
-        super::helpers::show_state_screen(bot.clone(), msg.chat.id, state.clone(), user.id, text.to_string(), Some(markup)).await?;
+        super::helpers::show_state_screen(
+            bot.clone(),
+            msg.chat.id,
+            state.clone(),
+            user.id,
+            text.to_string(),
+            Some(markup),
+        )
+        .await?;
     } else if data.starts_with("sfd_") {
         let val = data.strip_prefix("sfd_").unwrap_or("any");
         state
@@ -490,10 +701,12 @@ pub async fn handle_callback_query_inner(
                 };
             })
             .await;
-        super::helpers::show_search_menu_screen(bot.clone(), msg.chat.id, state.clone(), user.id).await?;
+        super::helpers::show_search_menu_screen(bot.clone(), msg.chat.id, state.clone(), user.id)
+            .await?;
     } else if data == "sf_reset" {
         state.clear_search_session(user.id).await;
-        super::helpers::show_search_menu_screen(bot.clone(), msg.chat.id, state.clone(), user.id).await?;
+        super::helpers::show_search_menu_screen(bot.clone(), msg.chat.id, state.clone(), user.id)
+            .await?;
     } else if data.starts_with("sf_run:") {
         let page: i64 = data
             .split(':')
@@ -639,11 +852,7 @@ async fn show_articles_by_tag(
         page,
         total_pages,
     );
-    let markup = keyboards::pagination_keyboard(
-        prev_cb,
-        next_cb,
-        "tags_list:0",
-    );
+    let markup = keyboards::pagination_keyboard(prev_cb, next_cb, "tags_list:0");
     super::helpers::show_state_screen(bot, msg.chat.id, state, user_id, text, Some(markup)).await
 }
 
@@ -686,11 +895,7 @@ async fn show_articles_by_rating(
         format!("Оценка: {} ⭐", rating)
     };
     let text = views::render_articles_list(&paginated.articles, &title, page, total_pages);
-    let markup = keyboards::pagination_keyboard(
-        prev_cb,
-        next_cb,
-        "ratings_list",
-    );
+    let markup = keyboards::pagination_keyboard(prev_cb, next_cb, "ratings_list");
     super::helpers::show_state_screen(bot, msg.chat.id, state, user_id, text, Some(markup)).await
 }
 
@@ -722,7 +927,15 @@ async fn show_search_tag_select(
     )]);
     let markup = InlineKeyboardMarkup::new(rows);
 
-    super::helpers::show_state_screen(bot, msg.chat.id, state, user_id, "🏷 <b>Выберите тег для фильтрации:</b>".to_string(), Some(markup)).await
+    super::helpers::show_state_screen(
+        bot,
+        msg.chat.id,
+        state,
+        user_id,
+        "🏷 <b>Выберите тег для фильтрации:</b>".to_string(),
+        Some(markup),
+    )
+    .await
 }
 
 async fn run_search(
@@ -787,5 +1000,13 @@ async fn show_ratings_list(bot: Bot, msg: &Message, state: Arc<BotState>) -> Res
     rows.push(vec![InlineKeyboardButton::callback("🏠 В хаб", "hub")]);
     let markup = InlineKeyboardMarkup::new(rows);
 
-    super::helpers::show_state_screen(bot, msg.chat.id, state, user_id, "⭐ <b>Выберите оценку для фильтрации:</b>".to_string(), Some(markup)).await
+    super::helpers::show_state_screen(
+        bot,
+        msg.chat.id,
+        state,
+        user_id,
+        "⭐ <b>Выберите оценку для фильтрации:</b>".to_string(),
+        Some(markup),
+    )
+    .await
 }

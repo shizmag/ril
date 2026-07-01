@@ -32,7 +32,14 @@ pub async fn handle_message(bot: Bot, msg: Message, state: Arc<BotState>) -> Res
             | PendingState::WaitingForTag { article_id } = pending
             {
                 if article_id > 0 {
-                    super::helpers::show_article_card_screen(bot, msg.chat.id, state, user.id, article_id).await?;
+                    super::helpers::show_article_card_screen(
+                        bot,
+                        msg.chat.id,
+                        state,
+                        user.id,
+                        article_id,
+                    )
+                    .await?;
                     return Ok(());
                 }
             }
@@ -50,7 +57,14 @@ pub async fn handle_message(bot: Bot, msg: Message, state: Arc<BotState>) -> Res
                             .await
                             .tg_err()?;
                         state.clear_pending_state(user.id).await;
-                        super::helpers::show_article_card_screen(bot, msg.chat.id, state, user.id, article_id).await?;
+                        super::helpers::show_article_card_screen(
+                            bot,
+                            msg.chat.id,
+                            state,
+                            user.id,
+                            article_id,
+                        )
+                        .await?;
                     }
                     Err(err) => {
                         let content = state
@@ -78,7 +92,14 @@ pub async fn handle_message(bot: Bot, msg: Message, state: Arc<BotState>) -> Res
                 let tags = super::helpers::normalize_tags(text);
                 state.bridge.add_tags(article_id, tags).await.tg_err()?;
                 state.clear_pending_state(user.id).await;
-                super::helpers::show_article_card_screen(bot, msg.chat.id, state, user.id, article_id).await?;
+                super::helpers::show_article_card_screen(
+                    bot,
+                    msg.chat.id,
+                    state,
+                    user.id,
+                    article_id,
+                )
+                .await?;
             }
             PendingState::WaitingForSearchQuery => {
                 state
@@ -167,12 +188,21 @@ pub async fn handle_command(
                             let mut map = state.user_formats.lock().await;
                             map.insert(user.id, fmt);
                         }
-                        super::helpers::show_settings_screen(bot, msg.chat.id, state, user.id).await?;
+                        super::helpers::show_settings_screen(bot, msg.chat.id, state, user.id)
+                            .await?;
                     }
                     Err(_) => {
                         let text = "Недопустимый формат. Поддерживаемые форматы: <b>markdown</b>, <b>html</b>, <b>epub</b>".to_string();
                         let markup = keyboards::back_to_hub_keyboard();
-                        super::helpers::show_state_screen(bot, msg.chat.id, state, user.id, text, Some(markup)).await?;
+                        super::helpers::show_state_screen(
+                            bot,
+                            msg.chat.id,
+                            state,
+                            user.id,
+                            text,
+                            Some(markup),
+                        )
+                        .await?;
                     }
                 }
             }
@@ -181,7 +211,8 @@ pub async fn handle_command(
             super::helpers::show_stats_screen(bot, msg.chat.id, state, user.id, "overview").await?;
         }
         Command::List => {
-            super::helpers::show_articles_list_screen(bot, msg.chat.id, state, user.id, "all", 0).await?;
+            super::helpers::show_articles_list_screen(bot, msg.chat.id, state, user.id, "all", 0)
+                .await?;
         }
         Command::Search(query) => {
             let query = query.trim();
@@ -194,7 +225,7 @@ pub async fn handle_command(
                         s.query = Some(query.to_string());
                     })
                     .await;
-                
+
                 let limit = 6;
                 let paginated = state
                     .bridge
@@ -224,19 +255,35 @@ pub async fn handle_command(
                     0,
                     total_pages,
                 );
-                let markup = keyboards::articles_list_keyboard(&paginated.articles, None, next_cb, "search");
-                super::helpers::show_state_screen(bot, msg.chat.id, state, user.id, text, Some(markup)).await?;
+                let markup =
+                    keyboards::articles_list_keyboard(&paginated.articles, None, next_cb, "search");
+                super::helpers::show_state_screen(
+                    bot,
+                    msg.chat.id,
+                    state,
+                    user.id,
+                    text,
+                    Some(markup),
+                )
+                .await?;
             }
         }
         Command::Get(id) => {
             let id = match id.split_whitespace().next().unwrap_or("").parse::<i64>() {
                 Ok(num) => num,
                 Err(_) => {
-                    super::helpers::show_error_state(bot, msg.chat.id, state, user.id, "Укажите числовой ID: /get <id>").await?;
+                    super::helpers::show_error_state(
+                        bot,
+                        msg.chat.id,
+                        state,
+                        user.id,
+                        "Укажите числовой ID: /get <id>",
+                    )
+                    .await?;
                     return Ok(());
                 }
             };
-            
+
             let user_format = {
                 let map = state.user_formats.lock().await;
                 *map.get(&user.id).unwrap_or(&state.config.default_format)
@@ -258,8 +305,16 @@ pub async fn handle_command(
                             export_res.format.to_uppercase(),
                             export_res.word_count,
                             (export_res.word_count as f64 / 200.0).ceil() as i64,
-                            if export_res.status == "read" { "✅" } else { "📖" },
-                            if export_res.status == "read" { "Прочитано" } else { "Не прочитано" },
+                            if export_res.status == "read" {
+                                "✅"
+                            } else {
+                                "📖"
+                            },
+                            if export_res.status == "read" {
+                                "Прочитано"
+                            } else {
+                                "Не прочитано"
+                            },
                             match export_res.rating {
                                 Some(r) => "⭐".repeat(r as usize),
                                 None => "нет оценки".to_string(),
@@ -267,20 +322,40 @@ pub async fn handle_command(
                         );
                         let markup = keyboards::document_keyboard(id, &export_res.status);
                         if let Some(state_msg_id) = state.clear_state_message(user.id).await {
-                            let _ = bot.delete_message(msg.chat.id, teloxide::types::MessageId(state_msg_id)).await;
+                            let _ = bot
+                                .delete_message(
+                                    msg.chat.id,
+                                    teloxide::types::MessageId(state_msg_id),
+                                )
+                                .await;
                         }
-                        let sent = bot.send_document(msg.chat.id, doc)
+                        let sent = bot
+                            .send_document(msg.chat.id, doc)
                             .caption(caption)
                             .reply_markup(markup)
                             .parse_mode(teloxide::types::ParseMode::Html)
                             .await?;
                         state.set_state_message(user.id, sent.id.0).await;
                     } else {
-                        super::helpers::show_error_state(bot, msg.chat.id, state, user.id, "Файл не найден на диске.").await?;
+                        super::helpers::show_error_state(
+                            bot,
+                            msg.chat.id,
+                            state,
+                            user.id,
+                            "Файл не найден на диске.",
+                        )
+                        .await?;
                     }
                 }
                 Err(e) => {
-                    super::helpers::show_error_state(bot, msg.chat.id, state, user.id, &format!("Ошибка при экспорте статьи: {}", e)).await?;
+                    super::helpers::show_error_state(
+                        bot,
+                        msg.chat.id,
+                        state,
+                        user.id,
+                        &format!("Ошибка при экспорте статьи: {}", e),
+                    )
+                    .await?;
                 }
             }
         }
@@ -288,19 +363,41 @@ pub async fn handle_command(
             let id = match id.split_whitespace().next().unwrap_or("").parse::<i64>() {
                 Ok(num) => num,
                 Err(_) => {
-                    super::helpers::show_error_state(bot, msg.chat.id, state, user.id, "Укажите числовой ID: /read <id>").await?;
+                    super::helpers::show_error_state(
+                        bot,
+                        msg.chat.id,
+                        state,
+                        user.id,
+                        "Укажите числовой ID: /read <id>",
+                    )
+                    .await?;
                     return Ok(());
                 }
             };
             match state.bridge.mark_article_read(id).await.tg_err() {
                 Ok(true) => {
-                    super::helpers::show_article_card_screen(bot, msg.chat.id, state, user.id, id).await?;
+                    super::helpers::show_article_card_screen(bot, msg.chat.id, state, user.id, id)
+                        .await?;
                 }
                 Ok(false) => {
-                    super::helpers::show_error_state(bot, msg.chat.id, state, user.id, "Материал не найден.").await?;
+                    super::helpers::show_error_state(
+                        bot,
+                        msg.chat.id,
+                        state,
+                        user.id,
+                        "Материал не найден.",
+                    )
+                    .await?;
                 }
                 Err(e) => {
-                    super::helpers::show_error_state(bot, msg.chat.id, state, user.id, &format!("Ошибка: {}", e)).await?;
+                    super::helpers::show_error_state(
+                        bot,
+                        msg.chat.id,
+                        state,
+                        user.id,
+                        &format!("Ошибка: {}", e),
+                    )
+                    .await?;
                 }
             }
         }
@@ -308,19 +405,41 @@ pub async fn handle_command(
             let id = match id.split_whitespace().next().unwrap_or("").parse::<i64>() {
                 Ok(num) => num,
                 Err(_) => {
-                    super::helpers::show_error_state(bot, msg.chat.id, state, user.id, "Укажите числовой ID: /unread <id>").await?;
+                    super::helpers::show_error_state(
+                        bot,
+                        msg.chat.id,
+                        state,
+                        user.id,
+                        "Укажите числовой ID: /unread <id>",
+                    )
+                    .await?;
                     return Ok(());
                 }
             };
             match state.bridge.mark_article_unread(id).await.tg_err() {
                 Ok(true) => {
-                    super::helpers::show_article_card_screen(bot, msg.chat.id, state, user.id, id).await?;
+                    super::helpers::show_article_card_screen(bot, msg.chat.id, state, user.id, id)
+                        .await?;
                 }
                 Ok(false) => {
-                    super::helpers::show_error_state(bot, msg.chat.id, state, user.id, "Материал не найден.").await?;
+                    super::helpers::show_error_state(
+                        bot,
+                        msg.chat.id,
+                        state,
+                        user.id,
+                        "Материал не найден.",
+                    )
+                    .await?;
                 }
                 Err(e) => {
-                    super::helpers::show_error_state(bot, msg.chat.id, state, user.id, &format!("Ошибка: {}", e)).await?;
+                    super::helpers::show_error_state(
+                        bot,
+                        msg.chat.id,
+                        state,
+                        user.id,
+                        &format!("Ошибка: {}", e),
+                    )
+                    .await?;
                 }
             }
         }
@@ -328,7 +447,14 @@ pub async fn handle_command(
             let id = match id.split_whitespace().next().unwrap_or("").parse::<i64>() {
                 Ok(num) => num,
                 Err(_) => {
-                    super::helpers::show_error_state(bot, msg.chat.id, state, user.id, "Укажите числовой ID: /delete <id>").await?;
+                    super::helpers::show_error_state(
+                        bot,
+                        msg.chat.id,
+                        state,
+                        user.id,
+                        "Укажите числовой ID: /delete <id>",
+                    )
+                    .await?;
                     return Ok(());
                 }
             };
@@ -340,10 +466,25 @@ pub async fn handle_command(
                         views::escape_html(&content.article.title)
                     );
                     let markup = keyboards::delete_confirm_keyboard(id);
-                    super::helpers::show_state_screen(bot, msg.chat.id, state, user.id, text, Some(markup)).await?;
+                    super::helpers::show_state_screen(
+                        bot,
+                        msg.chat.id,
+                        state,
+                        user.id,
+                        text,
+                        Some(markup),
+                    )
+                    .await?;
                 }
                 Err(_) => {
-                    super::helpers::show_error_state(bot, msg.chat.id, state, user.id, "Материал не найден.").await?;
+                    super::helpers::show_error_state(
+                        bot,
+                        msg.chat.id,
+                        state,
+                        user.id,
+                        "Материал не найден.",
+                    )
+                    .await?;
                 }
             }
         }
@@ -355,7 +496,15 @@ pub async fn handle_command(
             let text = "⚠️ <b>ВНИМАНИЕ:</b> Все файлы, материалы и базы данных будут удалены.\n\n\
                         Подтвердите сброс командой /confirmreset или отмените с помощью /cancel.";
             let markup = keyboards::reset_lib_confirm_keyboard();
-            super::helpers::show_state_screen(bot, msg.chat.id, state, user.id, text.to_string(), Some(markup)).await?;
+            super::helpers::show_state_screen(
+                bot,
+                msg.chat.id,
+                state,
+                user.id,
+                text.to_string(),
+                Some(markup),
+            )
+            .await?;
         }
         Command::ConfirmReset => {
             let is_pending = {
@@ -367,14 +516,36 @@ pub async fn handle_command(
                     Ok(_) => {
                         let text = "✅ <b>Библиотека успешно очищена.</b>";
                         let markup = keyboards::back_to_hub_keyboard();
-                        super::helpers::show_state_screen(bot, msg.chat.id, state, user.id, text.to_string(), Some(markup)).await?;
+                        super::helpers::show_state_screen(
+                            bot,
+                            msg.chat.id,
+                            state,
+                            user.id,
+                            text.to_string(),
+                            Some(markup),
+                        )
+                        .await?;
                     }
                     Err(e) => {
-                        super::helpers::show_error_state(bot, msg.chat.id, state, user.id, &format!("Ошибка при сбросе: {}", e)).await?;
+                        super::helpers::show_error_state(
+                            bot,
+                            msg.chat.id,
+                            state,
+                            user.id,
+                            &format!("Ошибка при сбросе: {}", e),
+                        )
+                        .await?;
                     }
                 }
             } else {
-                super::helpers::show_error_state(bot, msg.chat.id, state, user.id, "Нет активного запроса на сброс. Введите /reset.").await?;
+                super::helpers::show_error_state(
+                    bot,
+                    msg.chat.id,
+                    state,
+                    user.id,
+                    "Нет активного запроса на сброс. Введите /reset.",
+                )
+                .await?;
             }
         }
         Command::Cancel => {
@@ -386,7 +557,12 @@ pub async fn handle_command(
     Ok(())
 }
 
-fn spawn_delayed_delete(bot: Bot, chat_id: ChatId, msg_id: teloxide::types::MessageId, delay_secs: u64) {
+fn spawn_delayed_delete(
+    bot: Bot,
+    chat_id: ChatId,
+    msg_id: teloxide::types::MessageId,
+    delay_secs: u64,
+) {
     tokio::spawn(async move {
         tokio::time::sleep(std::time::Duration::from_secs(delay_secs)).await;
         let _ = bot.delete_message(chat_id, msg_id).await;
@@ -410,13 +586,23 @@ pub async fn handle_urls(
     };
     let text = msg.text().unwrap_or("");
     let text_lower = text.to_lowercase();
-    let force = text_lower.contains("force") || text_lower.contains("update") || text_lower.contains("обновить");
+    let force = text_lower.contains("force")
+        || text_lower.contains("update")
+        || text_lower.contains("обновить");
     let import_format = super::detect_format_override(text, default_fmt);
     let chat_id = msg.chat.id;
 
     // Show initial status screen in the state message
     let status_text = format!("⏳ <b>Импорт {} ссылок...</b>", urls.len());
-    super::helpers::show_state_screen(bot.clone(), chat_id, state.clone(), user.id, status_text, None).await?;
+    super::helpers::show_state_screen(
+        bot.clone(),
+        chat_id,
+        state.clone(),
+        user.id,
+        status_text,
+        None,
+    )
+    .await?;
 
     let bridge = state.bridge.clone();
     let sem = Arc::new(tokio::sync::Semaphore::new(2));
@@ -458,7 +644,13 @@ pub async fn handle_urls(
     for (i, res) in imported.iter().enumerate() {
         let domain = views::format_domain(&res.url);
         let read_time = (res.word_count as f64 / 200.0).ceil() as i64;
-        text_res.push_str(&format!("{}. {} — {} — {} мин\n", i + 1, views::escape_html(&res.title), domain, read_time));
+        text_res.push_str(&format!(
+            "{}. {} — {} — {} мин\n",
+            i + 1,
+            views::escape_html(&res.title),
+            domain,
+            read_time
+        ));
     }
 
     let has_errors = !errors.is_empty();

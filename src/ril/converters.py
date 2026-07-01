@@ -534,7 +534,20 @@ def preprocess_html(html: str) -> str:
 
     # 6. Merge split paragraphs
     merge_split_paragraphs(soup)
-            
+
+    # 7. Security hardening: strip event-handler attributes and javascript: URIs
+    _JS_SCHEME = re.compile(r'^\s*javascript\s*:', re.IGNORECASE)
+    for tag in soup.find_all(True):
+        # Remove all on* event handler attributes
+        for attr in list(tag.attrs.keys()):
+            if attr.lower().startswith("on"):
+                del tag[attr]
+        # Neutralize javascript: href / src
+        for url_attr in ("href", "src", "action"):
+            val = tag.get(url_attr, "")
+            if val and _JS_SCHEME.match(str(val)):
+                tag[url_attr] = "#"
+
     return str(soup)
 
 

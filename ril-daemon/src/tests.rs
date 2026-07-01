@@ -111,11 +111,13 @@ async fn test_mock_bridge_lifecycle() {
 }
 
 #[tokio::test]
+#[ignore = "e2e: requires live Python subprocess and local absolute path. Run with: cargo test -- --ignored"]
 async fn test_real_bridge_e2e() {
     let mut config = Config::load_from_env_only().unwrap();
     // Explicitly configure path to python workspace root for subprocess execution
     config.python_workdir = Some(std::path::PathBuf::from(
-        "/Users/vladimirkasterin/python/ril",
+        std::env::var("RIL_PYTHON_WORKDIR")
+            .unwrap_or_else(|_| "/Users/vladimirkasterin/python/ril".to_string()),
     ));
 
     let bridge = PythonBridge::new(config);

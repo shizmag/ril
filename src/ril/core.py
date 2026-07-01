@@ -32,7 +32,7 @@ def sanitize_filename(title: str) -> str:
     return name[:60].strip('_-')
 
 def download_pdf(url: str) -> Path:
-    """Download PDF to a temporary file."""
+    """Download PDF to a temporary file using a secure NamedTemporaryFile."""
     import urllib.request
     import tempfile
     import shutil
@@ -42,15 +42,67 @@ def download_pdf(url: str) -> Path:
     }
     req = urllib.request.Request(url, headers=headers)
     
-    temp_dir = Path(tempfile.gettempdir())
-    temp_pdf_path = temp_dir / f"download_{tempfile.mktemp(dir='')}.pdf"
+    # Use mkstemp for a race-condition-free, secure temp file
+    fd, tmp_name = tempfile.mkstemp(suffix=".pdf")
+    temp_pdf_path = Path(tmp_name)
     
     logger.info(f"Downloading PDF from {url} to {temp_pdf_path}...")
-    with urllib.request.urlopen(req) as response:
-        with open(temp_pdf_path, 'wb') as out_file:
-            shutil.copyfileobj(response, out_file)
+    try:
+        with urllib.request.urlopen(req) as response:
+            with open(fd, 'wb', closefd=True) as out_file:
+                shutil.copyfileobj(response, out_file)
+    except Exception:
+        # Close fd in case of error (already closed if open() succeeded)
+        try:
+            import os
+            os.close(fd)
+        except OSError:
+            pass
+        raise
             
     return temp_pdf_path
+
+
+def convert_pdf_with_marker(pdf_path: Path) -> tuple:
+    """
+    Convert a local PDF file to Markdown using marker-pdf.
+
+    Returns:
+        (markdown: str, title: str | None, images: dict)
+        where images maps image filename -> PIL.Image object.
+
+    This is a standalone function so it can be monkey-patched in tests
+    without loading any ML models.
+    """
+    import os
+    from marker.config.parser import ConfigParser
+    from marker.models import create_model_dict
+    from marker.output import text_from_rendered
+
+    os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
+
+    logger.info("Initializing marker-pdf models...")
+    models = create_model_dict()
+    config_parser = ConfigParser({"output_format": "markdown", "disable_ocr": True})
+
+    converter_cls = config_parser.get_converter_cls()
+    converter_obj = converter_cls(
+        config=config_parser.generate_config_dict(),
+        artifact_dict=models,
+        processor_list=config_parser.get_processors(),
+        renderer=config_parser.get_renderer(),
+        llm_service=config_parser.get_llm_service(),
+    )
+
+    logger.info(f"Converting PDF {pdf_path} using marker-pdf...")
+    rendered = converter_obj(str(pdf_path))
+    pdf_markdown, _ext, images = text_from_rendered(rendered)
+
+    pdf_title: Optional[str] = None
+    if rendered.metadata and isinstance(rendered.metadata, dict):
+        pdf_title = rendered.metadata.get("title") or None
+
+    return pdf_markdown, pdf_title, images or {}
 
 async def process_url(
     url: str,
@@ -102,43 +154,20 @@ async def process_url(
     if is_pdf:
         pdf_title = None
         pdf_markdown = ""
+        images: dict = {}
         try:
-            from marker.config.parser import ConfigParser
-            from marker.models import create_model_dict
-            from marker.output import text_from_rendered
             import base64
             import io
-            import os
-            
-            os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
-            
-            logger.info("Initializing marker-pdf models...")
-            models = create_model_dict()
-            config_parser = ConfigParser({"output_format": "markdown", "disable_ocr": True})
 
-            converter_cls = config_parser.get_converter_cls()
-            converter_obj = converter_cls(
-                config=config_parser.generate_config_dict(),
-                artifact_dict=models,
-                processor_list=config_parser.get_processors(),
-                renderer=config_parser.get_renderer(),
-                llm_service=config_parser.get_llm_service(),
-            )
-            
-            logger.info(f"Converting PDF {temp_pdf_path} using marker-pdf...")
-            rendered = converter_obj(str(temp_pdf_path))
-            pdf_markdown, ext, images = text_from_rendered(rendered)
-            
-            if rendered.metadata and isinstance(rendered.metadata, dict):
-                pdf_title = rendered.metadata.get("title")
-                
+            pdf_markdown, pdf_title, images = convert_pdf_with_marker(temp_pdf_path)
+
             if not pdf_title:
                 url_path = url.split('?')[0].split('/')[-1]
                 if url_path:
                     pdf_title = url_path.replace(".pdf", "").replace("_", " ").replace("-", " ").title()
                 else:
                     pdf_title = "PDF Document"
-                    
+
             if images and not config.DISABLE_IMAGES:
                 image_refs = {}
                 for idx, (img_name, img_obj) in enumerate(images.items()):
@@ -154,7 +183,7 @@ async def process_url(
                         mime_type = "image/jpeg"
                     b64_uri = f"data:{mime_type};base64,{img_b64}"
                     image_refs[ref_id] = b64_uri
-                    
+
                     escaped_name = re.escape(img_name)
                     pdf_markdown = re.sub(
                         rf'!\[(.*?)\]\({escaped_name}\)',
@@ -168,7 +197,7 @@ async def process_url(
                 # Strip all markdown image tags
                 pdf_markdown = re.sub(r'!\[.*?\]\(.*?\)', '', pdf_markdown)
                 pdf_markdown = re.sub(r'!\[.*?\]\[.*?\]', '', pdf_markdown)
-                    
+
         except Exception as e:
             logger.error(f"Error converting PDF via marker-pdf: {e}")
             raise e
@@ -176,8 +205,8 @@ async def process_url(
             try:
                 if temp_pdf_path and temp_pdf_path.exists():
                     temp_pdf_path.unlink()
-            except Exception as e:
-                logger.warning(f"Failed to delete temp PDF file: {e}")
+            except Exception as cleanup_err:
+                logger.warning(f"Failed to delete temp PDF file: {cleanup_err}")
                 
         date_str = datetime.date.today().strftime("%Y-%m-%d")
         clean_title = sanitize_filename(pdf_title)
@@ -424,7 +453,9 @@ def md_to_html_fallback(md_content: str, title: str) -> str:
         html_lines.append('</pre>')
         
     body = '\n'.join(html_lines)
-    return f"<html><head><title>{title}</title></head><body>{body}</body></html>"
+    import html as _html
+    safe_title = _html.escape(title)
+    return f"<html><head><title>{safe_title}</title></head><body>{body}</body></html>"
 
 async def export_article(article_id: int, export_format: str) -> Dict[str, Any]:
     article = db.get_article(article_id)

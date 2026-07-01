@@ -300,7 +300,8 @@ def search_articles(query: str, limit: int = 10) -> List[Dict[str, Any]]:
         except sqlite3.OperationalError:
             # If the query contains special character syntax that FTS5 fails to parse, 
             # we escape it by surrounding words with quotes or falling back to simple search.
-            safe_query = f'"{query.replace('"', ' ')}"'
+            clean_query = query.replace('"', ' ')
+            safe_query = f'"{clean_query}"'
             lemmatized_safe_query = lemmatize_query(safe_query)
             try:
                 cursor.execute("""
@@ -562,7 +563,7 @@ def search_articles_advanced(
             
     if query:
         lemmatized_query = lemmatize_query(query)
-        fts_where = "f.articles_fts MATCH ?"
+        fts_where = "articles_fts MATCH ?"
         fts_params = [lemmatized_query]
         
         all_conditions = [fts_where] + conditions
@@ -606,7 +607,8 @@ def search_articles_advanced(
                 cursor.execute(data_sql, all_params + [limit, offset])
                 rows = cursor.fetchall()
             except sqlite3.OperationalError:
-                safe_query = f'"{query.replace('"', ' ')}"'
+                clean_query = query.replace('"', ' ')
+                safe_query = f'"{clean_query}"'
                 lemmatized_safe = lemmatize_query(safe_query)
                 all_params_safe = [lemmatized_safe] + params
                 try:

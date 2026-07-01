@@ -83,7 +83,7 @@ pub async fn show_hub(
     } else {
         0.0
     };
-    
+
     let current_fmt = {
         let map = state.user_formats.lock().await;
         *map.get(&user_id).unwrap_or(&state.config.default_format)
@@ -149,7 +149,8 @@ pub async fn show_state_screen(
 ) -> ResponseResult<()> {
     let mut edited = false;
     if let Some(state_msg_id) = state.get_state_message(user_id).await {
-        let mut edit_req = bot.edit_message_text(chat_id, teloxide::types::MessageId(state_msg_id), &text);
+        let mut edit_req =
+            bot.edit_message_text(chat_id, teloxide::types::MessageId(state_msg_id), &text);
         if let Some(ref m) = markup {
             edit_req = edit_req.reply_markup(m.clone());
         }
@@ -172,7 +173,9 @@ pub async fn show_state_screen(
         if let Some(m) = markup {
             send_req = send_req.reply_markup(m);
         }
-        let sent = send_req.parse_mode(teloxide::types::ParseMode::Html).await?;
+        let sent = send_req
+            .parse_mode(teloxide::types::ParseMode::Html)
+            .await?;
         state.set_state_message(user_id, sent.id.0).await;
     }
 
@@ -335,7 +338,7 @@ pub async fn show_article_card_screen(
     match state.bridge.get_article_content(article_id).await.tg_err() {
         Ok(content) => {
             let mut text = views::render_article_card(&content.article);
-            
+
             // Show the user's current save format at the bottom of the card
             let current_fmt = {
                 let map = state.user_formats.lock().await;
@@ -343,7 +346,10 @@ pub async fn show_article_card_screen(
             }
             .to_string()
             .to_uppercase();
-            text.push_str(&format!("\n<b>Текущий формат скачивания:</b> {}", current_fmt));
+            text.push_str(&format!(
+                "\n<b>Текущий формат скачивания:</b> {}",
+                current_fmt
+            ));
 
             let markup = keyboards::article_card_keyboard(
                 content.article.id,
@@ -366,7 +372,7 @@ pub async fn show_search_menu_screen(
     user_id: UserId,
 ) -> ResponseResult<()> {
     let session = state.get_search_session(user_id).await;
-    
+
     // Calculate how many match active filters
     let paginated = state
         .bridge
@@ -384,7 +390,7 @@ pub async fn show_search_menu_screen(
         )
         .await
         .tg_err()?;
-        
+
     let query_str = session.query.as_deref().unwrap_or("все");
     let status_str = match session.status.as_deref() {
         Some("read") => "прочитанные",
@@ -395,7 +401,13 @@ pub async fn show_search_menu_screen(
     let tag_str = session.tag.as_deref().unwrap_or("все");
     let rating_str = match session.rating {
         Some(r) => format!("{}", r),
-        None => if session.no_rating { "без оценки".to_string() } else { "любая".to_string() },
+        None => {
+            if session.no_rating {
+                "без оценки".to_string()
+            } else {
+                "любая".to_string()
+            }
+        }
     };
     let date_str = match session.date_added.as_deref() {
         Some("today") => "за сегодня",

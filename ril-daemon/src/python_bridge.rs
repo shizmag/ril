@@ -300,10 +300,7 @@ impl PythonBridge {
                     .get("format")
                     .and_then(|v| v.as_str())
                     .unwrap_or("markdown");
-                let force = args
-                    .get("force")
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(false);
+                let force = args.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
 
                 if !force {
                     if let Some(existing) = state.articles.iter().find(|a| a.url == url) {
@@ -319,7 +316,7 @@ impl PythonBridge {
                 if let Some(existing) = state.articles.iter().find(|a| a.url == url) {
                     id = existing.id;
                 }
-                
+
                 state.articles.retain(|a| a.url != url);
 
                 let title = format!("Mock Article {}", id);
@@ -455,7 +452,10 @@ impl PythonBridge {
             }
             "export_article" => {
                 let id = args.get("article_id").and_then(|v| v.as_i64()).unwrap_or(0);
-                let format = args.get("format").and_then(|v| v.as_str()).unwrap_or("markdown");
+                let format = args
+                    .get("format")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("markdown");
                 let found = state.articles.iter().find(|art| art.id == id);
                 if let Some(art) = found {
                     serde_json::json!({
@@ -706,7 +706,12 @@ impl PythonBridge {
     }
 
     // Direct methods for easier usage:
-    pub async fn process_url(&self, url: &str, format: SaveFormat, force: bool) -> Result<ProcessingResult> {
+    pub async fn process_url(
+        &self,
+        url: &str,
+        format: SaveFormat,
+        force: bool,
+    ) -> Result<ProcessingResult> {
         #[derive(Serialize)]
         struct Args<'a> {
             url: &'a str,
@@ -800,13 +805,18 @@ impl PythonBridge {
         Ok(res.success)
     }
 
-    pub async fn export_article(&self, article_id: i64, format: SaveFormat) -> Result<crate::domain::ExportResult> {
+    pub async fn export_article(
+        &self,
+        article_id: i64,
+        format: SaveFormat,
+    ) -> Result<crate::domain::ExportResult> {
         #[derive(Serialize)]
         struct Args {
             article_id: i64,
             format: SaveFormat,
         }
-        self.call("export_article", Args { article_id, format }).await
+        self.call("export_article", Args { article_id, format })
+            .await
     }
 
     pub async fn reset_library(&self) -> Result<bool> {

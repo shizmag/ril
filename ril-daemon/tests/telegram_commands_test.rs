@@ -220,7 +220,9 @@ async fn test_cmd_reset_flow() {
                 .unwrap_or(false)
         })
     };
-    assert!(text_exists("Все файлы, материалы и базы данных будут удалены"));
+    assert!(text_exists(
+        "Все файлы, материалы и базы данных будут удалены"
+    ));
     assert!(text_exists("Библиотека успешно очищена"));
 }
 

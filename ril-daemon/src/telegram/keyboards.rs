@@ -31,7 +31,9 @@ pub fn article_card_keyboard(art_id: i64, status: &str, url: &str) -> InlineKeyb
         InlineKeyboardButton::callback("✅ Отметить прочитанным", format!("read:{}", art_id))
     };
 
-    let original_url = url.parse().unwrap_or_else(|_| "https://google.com".parse().unwrap());
+    let original_url = url
+        .parse()
+        .unwrap_or_else(|_| "https://google.com".parse().unwrap());
 
     InlineKeyboardMarkup::new(vec![
         vec![
@@ -148,12 +150,10 @@ pub fn articles_list_keyboard(
         if label.chars().count() > 30 {
             label = label.chars().take(27).collect::<String>() + "...";
         }
-        rows.push(vec![
-            InlineKeyboardButton::callback(
-                format!("📄 [{}] {}", a.id, label),
-                format!("art:{}", a.id),
-            ),
-        ]);
+        rows.push(vec![InlineKeyboardButton::callback(
+            format!("📄 [{}] {}", a.id, label),
+            format!("art:{}", a.id),
+        )]);
     }
 
     let mut pag_row = vec![];
@@ -184,9 +184,10 @@ pub fn search_menu_keyboard(session: &SearchSession) -> InlineKeyboardMarkup {
             ]);
         }
         None => {
-            rows.push(vec![
-                InlineKeyboardButton::callback("🔎 Запрос: все", "sf_query"),
-            ]);
+            rows.push(vec![InlineKeyboardButton::callback(
+                "🔎 Запрос: все",
+                "sf_query",
+            )]);
         }
     }
 
@@ -194,16 +195,25 @@ pub fn search_menu_keyboard(session: &SearchSession) -> InlineKeyboardMarkup {
     let mut row2 = vec![];
     match &session.domain {
         Some(d) => {
-            row2.push(InlineKeyboardButton::callback(format!("🌐 Источник: {}", d), "sf_domain"));
+            row2.push(InlineKeyboardButton::callback(
+                format!("🌐 Источник: {}", d),
+                "sf_domain",
+            ));
             row2.push(InlineKeyboardButton::callback("✕", "sf_clear_domain"));
         }
         None => {
-            row2.push(InlineKeyboardButton::callback("🌐 Источник: все", "sf_domain"));
+            row2.push(InlineKeyboardButton::callback(
+                "🌐 Источник: все",
+                "sf_domain",
+            ));
         }
     }
     match &session.tag {
         Some(t) => {
-            row2.push(InlineKeyboardButton::callback(format!("🏷 Тег: #{}", t), "sf_tag"));
+            row2.push(InlineKeyboardButton::callback(
+                format!("🏷 Тег: #{}", t),
+                "sf_tag",
+            ));
             row2.push(InlineKeyboardButton::callback("✕", "sf_clear_tag"));
         }
         None => {
@@ -216,8 +226,15 @@ pub fn search_menu_keyboard(session: &SearchSession) -> InlineKeyboardMarkup {
     let mut row3 = vec![];
     match &session.status {
         Some(s) => {
-            let label = if s == "read" { "✅ прочитанные" } else { "📖 непрочитанные" };
-            row3.push(InlineKeyboardButton::callback(format!("Статус: {}", label), "sf_status"));
+            let label = if s == "read" {
+                "✅ прочитанные"
+            } else {
+                "📖 непрочитанные"
+            };
+            row3.push(InlineKeyboardButton::callback(
+                format!("Статус: {}", label),
+                "sf_status",
+            ));
             row3.push(InlineKeyboardButton::callback("✕", "sf_clear_status"));
         }
         None => {
@@ -226,15 +243,24 @@ pub fn search_menu_keyboard(session: &SearchSession) -> InlineKeyboardMarkup {
     }
     match &session.rating {
         Some(r) => {
-            row3.push(InlineKeyboardButton::callback(format!("⭐ Оценка: {}", r), "sf_rating"));
+            row3.push(InlineKeyboardButton::callback(
+                format!("⭐ Оценка: {}", r),
+                "sf_rating",
+            ));
             row3.push(InlineKeyboardButton::callback("✕", "sf_clear_rating"));
         }
         None => {
             if session.no_rating {
-                row3.push(InlineKeyboardButton::callback("⭐ Оценка: без оценки", "sf_rating"));
+                row3.push(InlineKeyboardButton::callback(
+                    "⭐ Оценка: без оценки",
+                    "sf_rating",
+                ));
                 row3.push(InlineKeyboardButton::callback("✕", "sf_clear_rating"));
             } else {
-                row3.push(InlineKeyboardButton::callback("⭐ Оценка: любая", "sf_rating"));
+                row3.push(InlineKeyboardButton::callback(
+                    "⭐ Оценка: любая",
+                    "sf_rating",
+                ));
             }
         }
     }
@@ -256,9 +282,10 @@ pub fn search_menu_keyboard(session: &SearchSession) -> InlineKeyboardMarkup {
             ]);
         }
         None => {
-            rows.push(vec![
-                InlineKeyboardButton::callback("📅 Дата: всё время", "sf_date"),
-            ]);
+            rows.push(vec![InlineKeyboardButton::callback(
+                "📅 Дата: всё время",
+                "sf_date",
+            )]);
         }
     }
 
@@ -443,19 +470,21 @@ pub fn pending_input_keyboard(art_id: i64) -> InlineKeyboardMarkup {
             InlineKeyboardButton::callback("🔙 Назад к материалу", format!("art:{}", art_id)),
         ]);
     } else {
-        rows.push(vec![
-            InlineKeyboardButton::callback("❌ Отмена", "hub"),
-        ]);
+        rows.push(vec![InlineKeyboardButton::callback("❌ Отмена", "hub")]);
     }
     InlineKeyboardMarkup::new(rows)
 }
 
 pub fn import_results_keyboard(has_errors: bool) -> InlineKeyboardMarkup {
-    let mut row = vec![
-        InlineKeyboardButton::callback("Открыть последние", "open_last_imported"),
-    ];
+    let mut row = vec![InlineKeyboardButton::callback(
+        "Открыть последние",
+        "open_last_imported",
+    )];
     if has_errors {
-        row.push(InlineKeyboardButton::callback("Показать ошибки", "show_import_errors"));
+        row.push(InlineKeyboardButton::callback(
+            "Показать ошибки",
+            "show_import_errors",
+        ));
     }
     InlineKeyboardMarkup::new(vec![
         row,

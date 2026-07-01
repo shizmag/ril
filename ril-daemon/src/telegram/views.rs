@@ -117,19 +117,29 @@ pub fn render_articles_list(
     } else {
         for (i, a) in articles.iter().enumerate() {
             let status_emoji = if a.status == "read" { "✅" } else { "📖" };
-            let status_text = if a.status == "read" { "прочитано" } else { "непрочитано" };
+            let status_text = if a.status == "read" {
+                "прочитано"
+            } else {
+                "непрочитано"
+            };
             let title_escaped = escape_html(&a.title);
             let domain = format_domain(&a.url);
             let read_time = (a.word_count as f64 / 200.0).ceil() as i64;
-            
+
             let rating_str = match a.rating {
                 Some(r) => format!(" · ⭐ {}", r),
                 None => "".to_string(),
             };
-            
+
             text.push_str(&format!(
                 "<b>{}. {}</b>\n   {} · {} мин · {} {}{}\n\n",
-                i + 1, title_escaped, domain, read_time, status_emoji, status_text, rating_str
+                i + 1,
+                title_escaped,
+                domain,
+                read_time,
+                status_emoji,
+                status_text,
+                rating_str
             ));
         }
     }

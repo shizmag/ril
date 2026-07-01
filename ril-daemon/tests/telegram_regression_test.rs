@@ -129,7 +129,12 @@ async fn test_regression_commands_are_backwards_compatible() {
     );
 
     // Ensure `/delete <id>` shows confirmation, then callback removes the article
-    let res_del = handle_message(bot.clone(), make_message("/delete 1", 123, 456), state.clone()).await;
+    let res_del = handle_message(
+        bot.clone(),
+        make_message("/delete 1", 123, 456),
+        state.clone(),
+    )
+    .await;
     assert!(res_del.is_ok());
 
     // Import CallbackAction to use handle_callback_query
@@ -155,7 +160,15 @@ async fn test_two_screens_flow() {
 
     println!("PROCESSING URL...");
     // Process a URL to insert an article with ID 2 into the mock bridge
-    let _ = state.bridge.process_url("https://example.com/unique-test-url", ril_daemon::domain::SaveFormat::Markdown, false).await.unwrap();
+    let _ = state
+        .bridge
+        .process_url(
+            "https://example.com/unique-test-url",
+            ril_daemon::domain::SaveFormat::Markdown,
+            false,
+        )
+        .await
+        .unwrap();
 
     // Create the expected mock file for ID 2 in std::env::temp_dir()
     let mock_file_path = std::env::temp_dir().join("2.markdown");
@@ -170,12 +183,16 @@ async fn test_two_screens_flow() {
     let _cleaner = TempFileCleaner(mock_file_path.clone());
 
     // Set a mock state message first
-    state.set_state_message(teloxide::types::UserId(123), 2002).await;
+    state
+        .set_state_message(teloxide::types::UserId(123), 2002)
+        .await;
 
     println!("SENDING get_file:2 CALLBACK...");
     // Send get_file callback for ID 2
     let query = common::make_callback_query("get_file:2", 123, 456);
-    let res = ril_daemon::telegram::callbacks::handle_callback_query(bot.clone(), query, state.clone()).await;
+    let res =
+        ril_daemon::telegram::callbacks::handle_callback_query(bot.clone(), query, state.clone())
+            .await;
     println!("get_file:2 CALLBACK RESULT: {:?}", res);
     assert!(res.is_ok());
 
@@ -184,12 +201,10 @@ async fn test_two_screens_flow() {
     for r in reqs.iter() {
         println!("MOCK REQ: {}, BODY: {:?}", r.path, r.body);
     }
-    let delete_req = reqs
-        .iter()
-        .find(|r| {
-            r.path.to_lowercase().contains("deletemessage")
-                && r.body["message_id"].as_i64() == Some(2002)
-        });
+    let delete_req = reqs.iter().find(|r| {
+        r.path.to_lowercase().contains("deletemessage")
+            && r.body["message_id"].as_i64() == Some(2002)
+    });
     assert!(delete_req.is_some(), "Should delete previous state message");
 
     // Verify that sendDocument was called
@@ -209,14 +224,24 @@ async fn test_two_screens_flow() {
     // Test the newly implemented callbacks:
     // 1. open_last_imported
     let query_open = common::make_callback_query("open_last_imported", 123, 456);
-    let res_open = ril_daemon::telegram::callbacks::handle_callback_query(bot.clone(), query_open, state.clone()).await;
+    let res_open = ril_daemon::telegram::callbacks::handle_callback_query(
+        bot.clone(),
+        query_open,
+        state.clone(),
+    )
+    .await;
     println!("open_last_imported CALLBACK RESULT: {:?}", res_open);
     assert!(res_open.is_ok());
 
     println!("SENDING show_import_errors CALLBACK...");
     // 2. show_import_errors
     let query_err = common::make_callback_query("show_import_errors", 123, 456);
-    let res_err = ril_daemon::telegram::callbacks::handle_callback_query(bot.clone(), query_err, state.clone()).await;
+    let res_err = ril_daemon::telegram::callbacks::handle_callback_query(
+        bot.clone(),
+        query_err,
+        state.clone(),
+    )
+    .await;
     println!("show_import_errors CALLBACK RESULT: {:?}", res_err);
     assert!(res_err.is_ok());
     println!("TEST COMPLETED SUCCESSFULY!");
