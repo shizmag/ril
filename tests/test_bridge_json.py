@@ -179,5 +179,11 @@ async def test_bridge_process_url_with_force(mocker, setup_test_environment, cap
     captured = capsys.readouterr()
     res = json.loads(captured.out)
     assert res["ok"] is True
-    mock_process.assert_called_once_with("https://example.com", converter=mocker.ANY, force=True)
+    mock_process.assert_called_once_with(
+        "https://example.com",
+        converter=mocker.ANY,
+        force=True,
+        rasterize_svg=False,
+        force_ocr=False
+    )
 
