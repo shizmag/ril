@@ -5,8 +5,9 @@ import re
 import shutil
 import time
 import uuid
+from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Union
+from typing import List, Optional, Union
 
 import httpx
 from bs4 import BeautifulSoup
@@ -31,6 +32,12 @@ TEMP_DIR.mkdir(parents=True, exist_ok=True)
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 
+@dataclass
+class PipelineConfig:
+    rasterize_svg: bool = False
+    force_ocr: bool = False
+
+
 async def markdown_to_epub(md_path: Union[str, Path], epub_path: Union[str, Path]) -> None:
     """
     Convert a Markdown file to EPUB using Pandoc.
@@ -38,7 +45,6 @@ async def markdown_to_epub(md_path: Union[str, Path], epub_path: Union[str, Path
     md_path = Path(md_path)
     epub_path = Path(epub_path)
     
-    # Check if input file exists
     if not md_path.exists():
         raise FileNotFoundError(f"Markdown file not found: {md_path}")
         
@@ -88,13 +94,8 @@ def validate_and_normalize_math(md_content: str) -> str:
     Validate and normalize mathematical formulas to be standard Pandoc markdown compliant.
     Specifically, wraps display equations in $$...$$ and inline equations in $...$.
     """
-    # Replace LaTeX block math delimiters \[ ... \] with $$ ... $$
     content = re.sub(r'\\\[(.*?)\\\]', r'$$\1$$', md_content, flags=re.DOTALL)
-    # Replace LaTeX inline math delimiters \( ... \) with $ ... $
     content = re.sub(r'\\\((.*?)\\\)', r'$\1$', content, flags=re.DOTALL)
-    
-    # Ensure double dollars are on their own lines or correctly padded if needed,
-    # but standard regex replacement is generally sufficient for pandoc parsing.
     return content
 
 
@@ -117,19 +118,20 @@ async def download_pdf_directly(url: str, dest_path: Path) -> None:
             f.write(response.content)
 
 
-async def render_webpage_to_pdf(url: str, dest_path: Path) -> None:
+async def render_webpage_to_pdf(url: str, dest_path: Path, config: PipelineConfig) -> None:
     """
     Render a webpage to a clean PDF:
     1. Navigate with async Playwright, wait for networkidle.
     2. Extract raw HTML and clean via readability-lxml.
     3. Keep core content and preserve math images/SVGs.
-    4. Set page content to cleaned HTML and print to PDF.
+    4. Set page content to cleaned HTML.
+    5. Optionally rasterize SVG elements.
+    6. Print to PDF.
     """
     logger.info(f"Navigating to {url} using Playwright...")
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         try:
-            # Set a modern user agent
             context = await browser.new_context(
                 user_agent=(
                     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
@@ -140,16 +142,13 @@ async def render_webpage_to_pdf(url: str, dest_path: Path) -> None:
             )
             page = await context.new_page()
             
-            # Navigate to the page
             await page.goto(url, wait_until="networkidle", timeout=60000)
             
-            # Extract raw HTML and process it with readability
             raw_html = await page.content()
             doc = Document(raw_html)
             title = doc.title()
             cleaned_body = doc.summary()
             
-            # Construct a beautiful, clean HTML page
             clean_html = f"""<!DOCTYPE html>
 <html>
 <head>
@@ -193,10 +192,44 @@ async def render_webpage_to_pdf(url: str, dest_path: Path) -> None:
 </body>
 </html>"""
             
-            # Set page content to the readable version
             await page.set_content(clean_html, wait_until="networkidle")
             
-            # Attempt to set viewport to full page height or fallback to A4
+            # SVG Rasterization Strategy
+            if config.rasterize_svg:
+                logger.info("Executing client-side SVG rasterization...")
+                rasterize_script = """
+                () => {
+                    const svgs = document.querySelectorAll('svg');
+                    svgs.forEach(svg => {
+                        try {
+                            const rect = svg.getBoundingClientRect();
+                            const width = rect.width || svg.getAttribute('width') || 'auto';
+                            const height = rect.height || svg.getAttribute('height') || 'auto';
+                            
+                            const xml = new XMLSerializer().serializeToString(svg);
+                            const base64 = btoa(unescape(encodeURIComponent(xml)));
+                            
+                            const img = document.createElement('img');
+                            img.src = 'data:image/svg+xml;base64,' + base64;
+                            
+                            if (width !== 'auto' && width > 0) {
+                                img.style.width = width + 'px';
+                                img.width = width;
+                            }
+                            if (height !== 'auto' && height > 0) {
+                                img.style.height = height + 'px';
+                                img.height = height;
+                            }
+                            
+                            svg.parentNode.replaceChild(img, svg);
+                        } catch (e) {
+                            console.error('Failed to rasterize SVG:', e);
+                        }
+                    });
+                }
+                """
+                await page.evaluate(rasterize_script)
+            
             try:
                 height = await page.evaluate("document.documentElement.scrollHeight")
                 await page.pdf(
@@ -215,14 +248,19 @@ async def render_webpage_to_pdf(url: str, dest_path: Path) -> None:
             await browser.close()
 
 
-async def run_marker_pdf(pdf_path: Path, output_dir: Path) -> Path:
+async def run_marker_pdf(pdf_path: Path, output_dir: Path, config: PipelineConfig) -> Path:
     """
     Run marker-pdf CLI on the PDF file via subprocess.
+    If force_ocr is toggled on, inject FORCE_OCR=1 and EXTRACT_IMAGES=True environment variables.
     """
-    logger.info(f"Running marker-pdf on {pdf_path}...")
+    logger.info(f"Running marker-pdf on {pdf_path} (force_ocr={config.force_ocr})...")
     output_dir.mkdir(parents=True, exist_ok=True)
     
-    # Run marker_single via subprocess
+    env = os.environ.copy()
+    if config.force_ocr:
+        env["FORCE_OCR"] = "1"
+        env["EXTRACT_IMAGES"] = "True"
+        
     proc = await asyncio.create_subprocess_exec(
         MARKER_PATH,
         str(pdf_path),
@@ -231,7 +269,8 @@ async def run_marker_pdf(pdf_path: Path, output_dir: Path) -> Path:
         "--output_format",
         "markdown",
         stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE
+        stderr=asyncio.subprocess.PIPE,
+        env=env
     )
     stdout, stderr = await proc.communicate()
     
@@ -240,7 +279,6 @@ async def run_marker_pdf(pdf_path: Path, output_dir: Path) -> Path:
         
     logger.info(f"marker-pdf completed successfully. Output saved to {output_dir}")
     
-    # Locate the generated markdown file
     md_files = list(output_dir.glob("**/*.md"))
     if not md_files:
         raise FileNotFoundError(f"No markdown file found in marker-pdf output directory: {output_dir}")
@@ -248,7 +286,7 @@ async def run_marker_pdf(pdf_path: Path, output_dir: Path) -> Path:
     return md_files[0]
 
 
-async def process_pipeline(url: str) -> None:
+async def process_single_url(url: str, config: Optional[PipelineConfig] = None) -> None:
     """
     Executes the full pipeline for a single input URL:
     1. Ingestion & Routing
@@ -258,6 +296,9 @@ async def process_pipeline(url: str) -> None:
     5. Stateless cleanup
     6. Telemetry & logging
     """
+    if config is None:
+        config = PipelineConfig()
+        
     start_time = time.time()
     task_id = str(uuid.uuid4())
     
@@ -273,30 +314,25 @@ async def process_pipeline(url: str) -> None:
             await download_pdf_directly(url, temp_pdf)
         else:
             # Step 2: Reading Mode & Print to PDF
-            await render_webpage_to_pdf(url, temp_pdf)
+            await render_webpage_to_pdf(url, temp_pdf, config)
             
         # Step 3: Run marker-pdf
-        extracted_md_path = await run_marker_pdf(temp_pdf, marker_out_dir)
+        extracted_md_path = await run_marker_pdf(temp_pdf, marker_out_dir, config)
         
         # Step 4: Formatting & Interoperability
-        # Read the raw Markdown
         with open(extracted_md_path, "r", encoding="utf-8") as f:
             md_content = f.read()
             
-        # Validate/Normalize LaTeX math formulas
         normalized_md = validate_and_normalize_math(md_content)
         
-        # Write validated markdown file directly to output directory
         final_md_path = OUTPUT_DIR / f"{task_id}.md"
         with open(final_md_path, "w", encoding="utf-8") as f:
             f.write(normalized_md)
             
-        # Convert MD -> EPUB
         final_epub_path = OUTPUT_DIR / f"{task_id}.epub"
         await markdown_to_epub(final_md_path, final_epub_path)
         
-        # Verify Bidirectional integrity: Convert EPUB -> temporary MD and compare if needed
-        # (This satisfies the bi-directional MD <-> EPUB requirement)
+        # Verify Bidirectional integrity
         verify_md_path = OUTPUT_DIR / f"{task_id}_verified.md"
         try:
             await epub_to_markdown(final_epub_path, verify_md_path)
@@ -309,14 +345,12 @@ async def process_pipeline(url: str) -> None:
         raise e
     finally:
         # Step 5: Stateless Cleanup
-        # Delete temporary PDF
         if temp_pdf.exists():
             try:
                 temp_pdf.unlink()
             except Exception as err:
                 logger.warning(f"Failed to delete temp PDF {temp_pdf}: {err}")
                 
-        # Delete marker-pdf intermediate output directory (contains images/meta/cache)
         if marker_out_dir.exists():
             try:
                 shutil.rmtree(marker_out_dir)
@@ -328,21 +362,25 @@ async def process_pipeline(url: str) -> None:
     print(f"✅ Task completed for {url}. Pipeline executed in {elapsed_time:.2f} seconds.")
 
 
+# Alias to retain backward compatibility
+async def process_pipeline(url: str) -> None:
+    await process_single_url(url, PipelineConfig())
+
+
 if __name__ == "__main__":
     urls = [
-        "https://arxiv.org/pdf/1706.03762",  # Attention Is All You Need PDF
-        "https://en.wikipedia.org/wiki/Attention_is_all_you_need",  # Web article
-        "https://arxiv.org/pdf/2005.14165"   # GPT-3 PDF
+        "https://arxiv.org/pdf/1706.03762",
+        "https://en.wikipedia.org/wiki/Attention_is_all_you_need",
+        "https://arxiv.org/pdf/2005.14165"
     ]
     
     async def main():
-        # Clean/Ensure output paths are set up
         print("Starting Web-to-Document scraped pipeline...")
-        # Gather concurrently
-        tasks = [process_pipeline(url) for url in urls]
+        # Demo usage of config object
+        config = PipelineConfig(rasterize_svg=True, force_ocr=False)
+        tasks = [process_single_url(url, config) for url in urls]
         results = await asyncio.gather(*tasks, return_exceptions=True)
         
-        # Summarize results and errors
         for url, res in zip(urls, results):
             if isinstance(res, Exception):
                 print(f"❌ Task failed for {url} with error: {res}")
