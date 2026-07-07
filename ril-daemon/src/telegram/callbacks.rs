@@ -497,22 +497,28 @@ pub async fn handle_callback_query_inner(
         super::helpers::show_settings_screen(bot.clone(), msg.chat.id, state.clone(), user.id)
             .await?;
     } else if data == "toggle_svg" {
-        let mut map = state.user_rasterize_svg.lock().await;
-        let current = *map.get(&user.id).unwrap_or(&false);
-        map.insert(user.id, !current);
+        let current = {
+            let mut map = state.user_rasterize_svg.lock().await;
+            let current = *map.get(&user.id).unwrap_or(&false);
+            map.insert(user.id, !current);
+            !current
+        };
         custom_ack = Some(format!(
             "SVG Rasterization turned {}",
-            if !current { "ON" } else { "OFF" }
+            if current { "ON" } else { "OFF" }
         ));
         super::helpers::show_settings_screen(bot.clone(), msg.chat.id, state.clone(), user.id)
             .await?;
     } else if data == "toggle_ocr" {
-        let mut map = state.user_force_ocr.lock().await;
-        let current = *map.get(&user.id).unwrap_or(&false);
-        map.insert(user.id, !current);
+        let current = {
+            let mut map = state.user_force_ocr.lock().await;
+            let current = *map.get(&user.id).unwrap_or(&false);
+            map.insert(user.id, !current);
+            !current
+        };
         custom_ack = Some(format!(
             "Forced OCR turned {}",
-            if !current { "ON" } else { "OFF" }
+            if current { "ON" } else { "OFF" }
         ));
         super::helpers::show_settings_screen(bot.clone(), msg.chat.id, state.clone(), user.id)
             .await?;
