@@ -39,7 +39,7 @@ impl Config {
         let default_format = std::env::var("RIL_DEFAULT_FORMAT")
             .ok()
             .and_then(|val| val.parse::<SaveFormat>().ok())
-            .unwrap_or(SaveFormat::Markdown);
+            .unwrap_or(SaveFormat::Epub);
 
         let python_cmd = std::env::var("RIL_PYTHON_CMD").ok();
         let python_bin = std::env::var("RIL_PYTHON_BIN").ok().map(PathBuf::from);

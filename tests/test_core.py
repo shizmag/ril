@@ -2,6 +2,7 @@ import pytest
 import os
 from unittest.mock import AsyncMock
 from ril import core, db
+from ril.converters import MarkdownConverter
 
 def test_sanitize_filename():
     # Standard English titles
@@ -49,7 +50,7 @@ async def test_process_url_creates_directory_if_missing(mocker, setup_test_envir
     mocker.patch("ril.converters.MarkdownConverter.convert", mock_convert)
     
     # Process url should recreate the directory and succeed
-    result = await core.process_url("https://example.com/test-missing-dir")
+    result = await core.process_url("https://example.com/test-missing-dir", converter=MarkdownConverter())
     
     assert library_dir.exists()
     assert (library_dir / "images").exists()
@@ -70,7 +71,7 @@ async def test_process_url_pipeline(mocker, setup_test_environment):
     mocker.patch("ril.converters.MarkdownConverter.convert", mock_convert)
     
     # Run the pipeline
-    result = await core.process_url("https://habr.com/ru/articles/12345/")
+    result = await core.process_url("https://habr.com/ru/articles/12345/", converter=MarkdownConverter())
     
     # Assertions on pipeline result
     assert result["title"] == "Квантовые процессоры"

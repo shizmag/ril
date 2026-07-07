@@ -164,14 +164,14 @@ async fn test_two_screens_flow() {
         .bridge
         .process_url(
             "https://example.com/unique-test-url",
-            ril_daemon::domain::SaveFormat::Markdown,
+            ril_daemon::domain::SaveFormat::Epub,
             false,
         )
         .await
         .unwrap();
 
     // Create the expected mock file for ID 2 in std::env::temp_dir()
-    let mock_file_path = std::env::temp_dir().join("2.markdown");
+    let mock_file_path = std::env::temp_dir().join("2.epub");
     let _ = std::fs::File::create(&mock_file_path).unwrap();
 
     struct TempFileCleaner(std::path::PathBuf);

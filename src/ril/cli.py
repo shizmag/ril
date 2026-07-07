@@ -193,7 +193,7 @@ def main():
     # add command
     parser_add = subparsers.add_parser("add", help="Add a webpage to the library")
     parser_add.add_argument("url", help="URL of the page to scrape")
-    parser_add.add_argument("--format", choices=["markdown", "html", "epub"], default="markdown", help="Format to save the article (default: markdown)")
+    parser_add.add_argument("--format", choices=["markdown", "html", "epub"], default="epub", help="Format to save the article (default: epub)")
     parser_add.add_argument("-f", "--force", action="store_true", help="Force update if URL already exists")
     
     # search command

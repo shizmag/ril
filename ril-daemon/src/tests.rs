@@ -15,7 +15,7 @@ fn test_config_parsing() {
     std::env::remove_var("RIL_PYTHON_WORKDIR");
 
     let cfg = Config::load_from_env_only().unwrap();
-    assert_eq!(cfg.default_format, SaveFormat::Markdown);
+    assert_eq!(cfg.default_format, SaveFormat::Epub);
     assert_eq!(cfg.bridge_timeout_seconds, 600);
     assert!(cfg.telegram_token.is_none());
     assert!(cfg.allowed_telegram_users.is_empty());

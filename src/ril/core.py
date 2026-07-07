@@ -123,7 +123,8 @@ async def process_url(
             raise ValueError(f"URL already exists in library (ID: {existing['id']})")
 
     if not converter:
-        converter = MarkdownConverter()
+        from ril.converters import EPUBConverter
+        converter = EPUBConverter()
         
     logger.info(f"Processing URL: {url}")
     

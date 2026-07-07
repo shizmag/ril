@@ -14,13 +14,13 @@ logger = logging.getLogger("ril-mcp")
 mcp = FastMCP("Read It Later (RIL)")
 
 @mcp.tool()
-async def process_url(url: str, format: str = "markdown", force: bool = False) -> str:
+async def process_url(url: str, format: str = "epub", force: bool = False) -> str:
     """
     Download, clean, download images, convert, and save a webpage.
     
     Args:
         url: The web link/URL of the article to capture.
-        format: The format to save the article, either 'markdown' (default), 'html', or 'epub'.
+        format: The format to save the article, either 'epub' (default), 'markdown', or 'html'.
         force: Force update if URL already exists.
     """
     try:

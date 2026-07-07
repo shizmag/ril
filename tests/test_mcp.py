@@ -35,6 +35,8 @@ async def test_mcp_process_url(mocker, setup_test_environment):
     assert "Saved successfully!" in response
     assert "Quantum Computation" in response
     assert "500 words" in response
+    from ril.converters import EPUBConverter
+    assert isinstance(mock_process.call_args[1]["converter"], EPUBConverter)
     
     # Test valid html format
     response_html = await process_url("https://example.com/quantum", format="html")

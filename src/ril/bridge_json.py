@@ -7,7 +7,7 @@ from ril.converters import MarkdownConverter, HTMLConverter, EPUBConverter
 
 async def handle_process_url(args):
     url = args.get("url")
-    fmt = args.get("format", "markdown")
+    fmt = args.get("format", "epub")
     force = bool(args.get("force", False))
     if fmt == "html":
         converter = HTMLConverter()

@@ -118,7 +118,7 @@ impl PythonBridge {
                 db_path: None,
                 telegram_token: None,
                 allowed_telegram_users: vec![],
-                default_format: SaveFormat::Markdown,
+                default_format: SaveFormat::Epub,
                 python_cmd: None,
                 python_bin: None,
                 python_workdir: None,
