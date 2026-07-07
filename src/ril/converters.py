@@ -522,10 +522,44 @@ def convert_mathml_to_latex(mathml_tag) -> str:
 
 def preprocess_formulas(soup: BeautifulSoup, to_markdown: bool = False) -> None:
     """
-    Finds and normalizes math formulas (KaTeX, MathJax, MathML, raw TeX delimiters) in the HTML soup.
+    Finds and normalizes math formulas (KaTeX, MathJax, MathML, raw TeX delimiters, formula images) in the HTML soup.
     - If to_markdown: converts them into Markdown delimiters $...$ and $$...$$.
     - If not to_markdown (EPUB): converts them into clean, namespaced MathML structures.
     """
+    # 0. Convert formula images (e.g. on Habr: <img class="formula inline" source="...">)
+    for img in soup.find_all("img"):
+        classes = img.get("class", [])
+        if isinstance(classes, str):
+            classes = [classes]
+        if any("formula" in c for c in classes) or any("katex" in c for c in classes) or any("math" in c for c in classes):
+            latex_code = img.get("source") or img.get("alt")
+            if not latex_code:
+                continue
+            latex_code = latex_code.strip()
+            
+            # Extract display/inline status
+            is_display = "inline" not in classes
+            # If LaTeX starts/ends with $$ or $, strip them
+            if latex_code.startswith("$$") and latex_code.endswith("$$"):
+                latex_code = latex_code[2:-2].strip()
+                is_display = True
+            elif latex_code.startswith("$") and latex_code.endswith("$"):
+                latex_code = latex_code[1:-1].strip()
+                is_display = False
+                
+            if to_markdown:
+                math_text = f" $${latex_code}$$ " if is_display else f" ${latex_code}$ "
+                img.replace_with(soup.new_string(math_text))
+            else:
+                math_soup = convert_latex_to_mathml(latex_code, "block" if is_display else "inline")
+                new_math = math_soup.find("math")
+                if new_math:
+                    img.replace_with(new_math)
+                else:
+                    fallback_span = soup.new_tag("span", attrs={"class": "math-fallback"})
+                    fallback_span.string = f" $${latex_code}$$ " if is_display else f" ${latex_code}$ "
+                    img.replace_with(fallback_span)
+
     # 1. Convert KaTeX elements (usually <span class="katex"> or <div class="katex-display">)
     for el in soup.find_all(class_=re.compile(r"\bkatex\b|\bkatex-display\b")):
         if el.find_parent(class_=re.compile(r"\bkatex\b|\bkatex-display\b")):
@@ -661,6 +695,13 @@ def preprocess_html(html: str) -> str:
         if tag.name == "script":
             script_type = tag.get("type", "")
             if script_type and ("math/tex" in script_type or "math/mml" in script_type):
+                continue
+        # DO NOT decompose math formula images
+        if tag.name == "img":
+            classes = tag.get("class", [])
+            if isinstance(classes, str):
+                classes = [classes]
+            if any("formula" in c for c in classes) or any("katex" in c for c in classes) or any("math" in c for c in classes):
                 continue
         tag.decompose()
         
@@ -1739,6 +1780,46 @@ class EPUBConverter(BaseConverter):
         soup = BeautifulSoup(html_content, "lxml")
         img_tags = soup.find_all("img")
         
+        # Identify illustration vs inline images
+        for img in img_tags:
+            is_inline = False
+            for sib in img.previous_siblings:
+                if sib.name is None:
+                    if str(sib).strip():
+                        is_inline = True
+                        break
+                elif sib.name in {"a", "span", "b", "strong", "i", "em", "code", "del", "strike", "s"}:
+                    is_inline = True
+                    break
+                else:
+                    break
+            if not is_inline:
+                for sib in img.next_siblings:
+                    if sib.name is None:
+                        if str(sib).strip():
+                            is_inline = True
+                            break
+                    elif sib.name in {"a", "span", "b", "strong", "i", "em", "code", "del", "strike", "s"}:
+                        is_inline = True
+                        break
+                    else:
+                        break
+            
+            # Check for explicitly small dimensions
+            w = img.get("width")
+            h = img.get("height")
+            try:
+                if (w and int(w) <= 40) or (h and int(h) <= 40):
+                    is_inline = True
+            except ValueError:
+                pass
+                
+            if not is_inline:
+                classes = img.get("class", [])
+                if isinstance(classes, str):
+                    classes = [classes]
+                img["class"] = classes + ["illustration"]
+        
         images_to_pack = []  # list of (epub_path, bytes, mime_type)
         semaphore = asyncio.Semaphore(3)
         
@@ -1907,9 +1988,13 @@ class EPUBConverter(BaseConverter):
                 'img {\n'
                 '  max-width: 100%;\n'
                 '  height: auto;\n'
+                '  display: inline-block;\n'
+                '  vertical-align: middle;\n'
+                '  border-radius: 4px;\n'
+                '}\n'
+                'img.illustration {\n'
                 '  display: block;\n'
                 '  margin: 1.5em auto;\n'
-                '  border-radius: 4px;\n'
                 '}\n'
                 'blockquote {\n'
                 '  margin: 1em 0;\n'
@@ -1927,6 +2012,30 @@ class EPUBConverter(BaseConverter):
                 'pre {\n'
                 '  padding: 1em;\n'
                 '  overflow-x: auto;\n'
+                '}\n'
+                'table {\n'
+                '  width: 100%;\n'
+                '  border-collapse: collapse;\n'
+                '  margin: 1.5em 0;\n'
+                '}\n'
+                'th, td {\n'
+                '  border: 1px solid #ccc;\n'
+                '  padding: 0.6em;\n'
+                '  text-align: left;\n'
+                '  vertical-align: top;\n'
+                '}\n'
+                'th {\n'
+                '  background-color: #f2f2f2;\n'
+                '  font-weight: bold;\n'
+                '}\n'
+                'table p {\n'
+                '  margin: 0;\n'
+                '  padding: 0;\n'
+                '}\n'
+                '.table-container {\n'
+                '  width: 100%;\n'
+                '  overflow-x: auto;\n'
+                '  margin: 1.5em 0;\n'
                 '}\n'
             )
             epub.writestr("OEBPS/style.css", style_css)

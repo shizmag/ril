@@ -434,6 +434,41 @@ async def test_epub_converter_basic(mocker, setup_test_environment):
         assert 'src="images/img_0.png"' in article_xhtml
 
 
+@pytest.mark.asyncio
+async def test_epub_converter_math_and_tables(mocker, setup_test_environment):
+    from ril.converters import EPUBConverter
+    import zipfile
+    import io
+
+    converter = EPUBConverter()
+
+    # HTML containing tables and formula images
+    html = (
+        "<h1>Formula Article</h1>"
+        "<table><tr><th>Header</th></tr><tr><td><img class=\"formula inline\" source=\"\\pm i\" alt=\"\\pm i\" /></td></tr></table>"
+        "<p>Inline <img class=\"formula inline\" source=\"E=mc^2\" alt=\"E=mc^2\" /> equation.</p>"
+    )
+
+    epub_bytes = await converter.convert(html, "https://example.com", "test-epub-math")
+    assert isinstance(epub_bytes, bytes)
+
+    with zipfile.ZipFile(io.BytesIO(epub_bytes)) as z:
+        # Check that style.css contains table styles and image styles
+        style_css = z.read("OEBPS/style.css").decode("utf-8")
+        assert "table {" in style_css
+        assert "table p {" in style_css
+        assert "img.illustration" in style_css
+
+        # Check that article.xhtml contains MathML and table layout
+        article_xhtml = z.read("OEBPS/article.xhtml").decode("utf-8")
+        assert "math" in article_xhtml
+        assert "xmlns=\"http://www.w3.org/1998/Math/MathML\"" in article_xhtml
+        assert "<table" in article_xhtml
+        assert "table-container" in article_xhtml
+        # Formula image tags are replaced with MathML, so no formula images are in EPUB
+        assert "images/img_" not in article_xhtml
+
+
 def test_image_optimization_transparency():
     from PIL import Image
     import io

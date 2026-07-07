@@ -56,6 +56,19 @@ def test_formula_conversion():
     assert "$a^2 + b^2 = c^2$" in res_raw
     assert "$$y = mx + c$$" in res_raw
 
+    # 4. Formula images (e.g. Habr style)
+    html_images = (
+        "<p>Equation inline: <img class='formula inline' source='\\pm i' alt='\\pm i' /></p>"
+        "<p>Equation block: <img class='formula' source='x^5 - 6x + 3 = 0.' alt='x^5 - 6x + 3 = 0.' /></p>"
+    )
+    soup_imgs = BeautifulSoup(html_images, "lxml")
+    preprocess_formulas(soup_imgs, to_markdown=True)
+    res_imgs = str(soup_imgs)
+    
+    assert "$\\pm i$" in res_imgs
+    assert "$$x^5 - 6x + 3 = 0.$$" in res_imgs
+
+
 
 def test_markdown_image_syntax_repair():
     """
