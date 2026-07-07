@@ -118,7 +118,7 @@ async fn test_callback_routing_access_denied() {
     println!("Requests received in access_denied: {:?}", *reqs);
     assert!(res.is_ok(), "Error was: {:?}", res);
 
-    // It should answer the callback query with "Доступ запрещен" text and NOT edit the message UI
+    // It should answer the callback query with "Access denied" text and NOT edit the message UI
     let answer_req = reqs
         .iter()
         .find(|r| r.path.to_lowercase().contains("answercallbackquery"))
@@ -126,6 +126,6 @@ async fn test_callback_routing_access_denied() {
     assert!(answer_req.body["text"]
         .as_str()
         .unwrap()
-        .contains("Доступ запрещен"));
+        .contains("Access denied"));
     assert!(!reqs.iter().any(|r| r.path.contains("editMessageText")));
 }

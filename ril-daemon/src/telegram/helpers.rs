@@ -91,12 +91,12 @@ pub async fn show_hub(
     .to_string();
 
     let welcome = format!(
-        "📚 <b>Read It Later Bot</b> — ваш удобный хаб для материалов!\n\n\
-         Всего материалов: <b>{}</b>\n\
-         Прочитано: <b>{}</b> (прогресс {:.1}%)\n\
-         Не прочитано: <b>{}</b>\n\
-         Формат скачивания: <b>{}</b>\n\n\
-         Отправьте мне ссылку, чтобы сохранить её, или воспользуйтесь кнопками меню:",
+        "📚 <b>Read It Later Bot</b> — your personal hub for reading materials!\n\n\
+         Total articles: <b>{}</b>\n\
+         Read: <b>{}</b> (progress {:.1}%)\n\
+         Unread: <b>{}</b>\n\
+         Download format: <b>{}</b>\n\n\
+         Send me a link to save it, or use the menu buttons:",
         stats.total_articles, stats.read_articles, progress, stats.unread_articles, current_fmt
     );
 
@@ -205,7 +205,7 @@ pub async fn show_error_state(
     user_id: UserId,
     error_msg: &str,
 ) -> ResponseResult<()> {
-    let text = format!("❌ <b>Ошибка:</b>\n\n{}", error_msg);
+    let text = format!("❌ <b>Error:</b>\n\n{}", error_msg);
     let markup = keyboards::back_to_hub_keyboard();
     show_state_screen(bot, chat_id, state, user_id, text, Some(markup)).await
 }
@@ -223,9 +223,9 @@ pub async fn show_settings_screen(
     .to_string();
 
     let text = format!(
-        "⚙️ <b>Настройки</b>\n\n\
-         Текущий формат скачивания: <b>{}</b>\n\n\
-         Этот формат применяется при скачивании любых материалов, включая уже сохраненные.",
+        "⚙️ <b>Settings</b>\n\n\
+         Current download format: <b>{}</b>\n\n\
+         This format is applied when downloading any articles, including already saved ones.",
         current_fmt.to_uppercase()
     );
     let markup = keyboards::settings_keyboard(&current_fmt);
@@ -313,9 +313,9 @@ pub async fn show_articles_list_screen(
     };
 
     let title = match status {
-        "read" => "Прочитанные материалы",
-        "unread" => "Непрочитанные материалы",
-        _ => "Все материалы библиотеки",
+        "read" => "Read materials",
+        "unread" => "Unread materials",
+        _ => "All library materials",
     };
 
     let text = views::render_articles_list(&paginated.articles, title, page, total_pages);
@@ -347,7 +347,7 @@ pub async fn show_article_card_screen(
             .to_string()
             .to_uppercase();
             text.push_str(&format!(
-                "\n<b>Текущий формат скачивания:</b> {}",
+                "\n<b>Current download format:</b> {}",
                 current_fmt
             ));
 
@@ -359,7 +359,7 @@ pub async fn show_article_card_screen(
             show_state_screen(bot, chat_id, state, user_id, text, Some(markup)).await?;
         }
         Err(_) => {
-            show_error_state(bot, chat_id, state, user_id, "Материал не найден.").await?;
+            show_error_state(bot, chat_id, state, user_id, "Article not found.").await?;
         }
     }
     Ok(())
@@ -391,41 +391,41 @@ pub async fn show_search_menu_screen(
         .await
         .tg_err()?;
 
-    let query_str = session.query.as_deref().unwrap_or("все");
+    let query_str = session.query.as_deref().unwrap_or("all");
     let status_str = match session.status.as_deref() {
-        Some("read") => "прочитанные",
-        Some("unread") => "непрочитанные",
-        _ => "все",
+        Some("read") => "read",
+        Some("unread") => "unread",
+        _ => "all",
     };
-    let source_str = session.domain.as_deref().unwrap_or("все");
-    let tag_str = session.tag.as_deref().unwrap_or("все");
+    let source_str = session.domain.as_deref().unwrap_or("all");
+    let tag_str = session.tag.as_deref().unwrap_or("all");
     let rating_str = match session.rating {
         Some(r) => format!("{}", r),
         None => {
             if session.no_rating {
-                "без оценки".to_string()
+                "no rating".to_string()
             } else {
-                "любая".to_string()
+                "any".to_string()
             }
         }
     };
     let date_str = match session.date_added.as_deref() {
-        Some("today") => "за сегодня",
-        Some("week") => "за неделю",
-        Some("month") => "за месяц",
-        _ => "за всё время",
+        Some("today") => "today",
+        Some("week") => "this week",
+        Some("month") => "this month",
+        _ => "all time",
     };
 
     let text = format!(
-        "🔎 <b>Поиск материалов</b>\n\n\
-         <b>Запрос:</b> {}\n\
-         <b>Статус:</b> {}\n\
-         <b>Источник:</b> {}\n\
-         <b>Тег:</b> {}\n\
-         <b>Оценка:</b> {}\n\
-         <b>Дата:</b> {}\n\n\
-         <b>Найдено:</b> {}\n\n\
-         Настройте фильтры кнопками ниже и нажмите <b>Искать</b>:",
+        "🔎 <b>Search Articles</b>\n\n\
+         <b>Query:</b> {}\n\
+         <b>Status:</b> {}\n\
+         <b>Source:</b> {}\n\
+         <b>Tag:</b> {}\n\
+         <b>Rating:</b> {}\n\
+         <b>Date:</b> {}\n\n\
+         <b>Found:</b> {}\n\n\
+         Configure filters using the buttons below and click <b>Search</b>:",
         query_str, status_str, source_str, tag_str, rating_str, date_str, paginated.total_count
     );
     let markup = keyboards::search_menu_keyboard(&session);

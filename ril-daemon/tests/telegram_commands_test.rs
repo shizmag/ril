@@ -26,7 +26,7 @@ async fn test_cmd_start_help_hub() {
         .unwrap();
     let text = send_req.body["text"].as_str().unwrap();
     assert!(text.contains("Read It Later Bot"));
-    assert!(text.contains("Всего материалов:"));
+    assert!(text.contains("Total articles:"));
 
     let markup = &send_req.body["reply_markup"]["inline_keyboard"];
     assert!(markup.is_array());
@@ -48,7 +48,7 @@ async fn test_cmd_stats() {
         .find(|r| r.path.to_lowercase().contains("sendmessage"))
         .unwrap();
     let text = send_req.body["text"].as_str().unwrap();
-    assert!(text.contains("Общая статистика библиотеки"));
+    assert!(text.contains("General Library Statistics"));
 }
 
 #[tokio::test]
@@ -67,7 +67,7 @@ async fn test_cmd_list() {
         .find(|r| r.path.to_lowercase().contains("sendmessage"))
         .unwrap();
     let text = send_req.body["text"].as_str().unwrap();
-    assert!(text.contains("Все материалы библиотеки"));
+    assert!(text.contains("All library materials"));
 }
 
 #[tokio::test]
@@ -96,8 +96,8 @@ async fn test_cmd_search_empty_and_args() {
                 .unwrap_or(false)
         })
     };
-    assert!(text_exists("Поиск материалов"));
-    assert!(text_exists("Результаты поиска по"));
+    assert!(text_exists("Search Articles"));
+    assert!(text_exists("Search results for"));
 }
 
 #[tokio::test]
@@ -120,7 +120,7 @@ async fn test_cmd_get_invalid_id() {
                 .unwrap_or(false)
         })
     };
-    assert!(text_exists("Укажите числовой ID"));
+    assert!(text_exists("Specify a numeric ID"));
 }
 
 #[tokio::test]
@@ -154,9 +154,9 @@ async fn test_cmd_read_unread_delete() {
                 .unwrap_or(false)
         })
     };
-    assert!(text_exists("Прочитано"));
-    assert!(text_exists("Не прочитано"));
-    assert!(text_exists("Вы уверены, что хотите удалить этот материал"));
+    assert!(text_exists("Read"));
+    assert!(text_exists("Unread"));
+    assert!(text_exists("Are you sure you want to delete this article"));
 }
 
 #[tokio::test]
@@ -185,7 +185,7 @@ async fn test_cmd_format_and_change() {
                 .unwrap_or(false)
         })
     };
-    assert!(text_exists("Текущий формат скачивания"));
+    assert!(text_exists("Current download format"));
 }
 
 #[tokio::test]
@@ -221,9 +221,9 @@ async fn test_cmd_reset_flow() {
         })
     };
     assert!(text_exists(
-        "Все файлы, материалы и базы данных будут удалены"
+        "All files, articles, and databases will be deleted"
     ));
-    assert!(text_exists("Библиотека успешно очищена"));
+    assert!(text_exists("Library successfully cleared"));
 }
 
 #[tokio::test]

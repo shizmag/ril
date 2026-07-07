@@ -32,7 +32,7 @@ async fn test_regression_url_import() {
     // The bot edits the temporary "importing" message into the final article card
     let reqs = server.requests.lock().unwrap();
 
-    // First it sends "Импорт 1 ссылок..."
+    // First it sends "Importing 1 links..."
     let send_req = reqs
         .iter()
         .find(|r| r.path.to_lowercase().contains("sendmessage"))
@@ -40,7 +40,7 @@ async fn test_regression_url_import() {
     assert!(send_req.body["text"]
         .as_str()
         .unwrap()
-        .contains("Импорт 1 ссылок"));
+        .contains("Importing 1 links"));
 
     // Find the SendMessage request (there is only 1 now)
     let send_message_reqs: Vec<_> = reqs
@@ -57,7 +57,7 @@ async fn test_regression_url_import() {
     assert_eq!(edit_message_reqs.len(), 1);
     let final_req = edit_message_reqs[0];
     let text = final_req.body["text"].as_str().unwrap();
-    assert!(text.contains("Импорт завершен"));
+    assert!(text.contains("Import finished"));
     assert!(text.contains("news.ycombinator.com"));
 }
 
@@ -81,7 +81,7 @@ async fn test_regression_get_command() {
         .find(|r| r.path.to_lowercase().contains("sendmessage"))
         .unwrap();
     let text = send_req.body["text"].as_str().unwrap();
-    assert!(text.contains("Файл не найден на диске"));
+    assert!(text.contains("File not found on disk"));
 }
 
 #[tokio::test]

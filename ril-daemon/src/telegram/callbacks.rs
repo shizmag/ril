@@ -27,7 +27,7 @@ pub async fn handle_callback_query_inner(
     if !crate::telegram::is_allowed(user.id, &state.config.allowed_telegram_users) {
         let _ = bot
             .answer_callback_query(q.id)
-            .text("Доступ запрещен")
+            .text("Access denied")
             .await;
         return Ok(());
     }
@@ -84,10 +84,10 @@ pub async fn handle_callback_query_inner(
                     let doc = InputFile::file(file_path);
                     let caption = format!(
                         "📥 <b>{} [{}]</b>\n\n\
-                         <b>Формат:</b> {}\n\
-                         <b>Слов:</b> {} (~{} мин. чтения)\n\
-                         <b>Статус:</b> {} {}\n\
-                         <b>Оценка:</b> {}",
+                         <b>Format:</b> {}\n\
+                         <b>Words:</b> {} (~{} min read)\n\
+                         <b>Status:</b> {} {}\n\
+                         <b>Rating:</b> {}",
                         views::escape_html(&export_res.title),
                         export_res.article_id,
                         export_res.format.to_uppercase(),
@@ -99,13 +99,13 @@ pub async fn handle_callback_query_inner(
                             "📖"
                         },
                         if export_res.status == "read" {
-                            "Прочитано"
+                            "Read"
                         } else {
-                            "Не прочитано"
+                            "Unread"
                         },
                         match export_res.rating {
                             Some(r) => "⭐".repeat(r as usize),
-                            None => "нет оценки".to_string(),
+                            None => "no rating".to_string(),
                         }
                     );
                     let markup = keyboards::document_keyboard(id, &export_res.status);
@@ -127,7 +127,7 @@ pub async fn handle_callback_query_inner(
                         msg.chat.id,
                         state.clone(),
                         user.id,
-                        "Файл не найден на диске.",
+                        "File not found on disk.",
                     )
                     .await?;
                 }
@@ -138,7 +138,7 @@ pub async fn handle_callback_query_inner(
                     msg.chat.id,
                     state.clone(),
                     user.id,
-                    &format!("Ошибка при экспорте статьи: {}", e),
+                    &format!("Error exporting article: {}", e),
                 )
                 .await?;
             }
@@ -157,25 +157,25 @@ pub async fn handle_callback_query_inner(
                 state.bridge.mark_article_read(id).await.tg_err()?;
                 "read"
             };
-            custom_ack = Some("Статус обновлен".to_string());
+            custom_ack = Some("Status updated".to_string());
 
             let status_text = if new_status == "read" {
-                "Прочитано"
+                "Read"
             } else {
-                "Не прочитано"
+                "Unread"
             };
             let read_time = (content.article.word_count as f64 / 200.0).ceil() as i64;
             let rating_stars = match content.article.rating {
                 Some(r) => "⭐".repeat(r as usize),
-                None => "нет оценки".to_string(),
+                None => "no rating".to_string(),
             };
             let status_emoji = if new_status == "read" { "✅" } else { "📖" };
 
             let caption = format!(
                 "📄 <b>{}</b>\n\n\
-                 <b>Слов:</b> {} (~{} мин. чтения)\n\
-                 <b>Статус:</b> {} {}\n\
-                 <b>Оценка:</b> {}\n\
+                 <b>Words:</b> {} (~{} min read)\n\
+                 <b>Status:</b> {} {}\n\
+                 <b>Rating:</b> {}\n\
                  <b>ID:</b> <code>{}</code>",
                 views::escape_html(&content.article.title),
                 content.article.word_count,
@@ -211,7 +211,7 @@ pub async fn handle_callback_query_inner(
             let id: i64 = parts[1].parse().unwrap_or(0);
             let val: i32 = parts[2].parse().unwrap_or(0);
             state.bridge.rate_article(id, Some(val)).await.tg_err()?;
-            custom_ack = Some("Оценка выставлена".to_string());
+            custom_ack = Some("Rating set".to_string());
 
             let stars = "⭐".repeat(val as usize);
             if let Ok(content) = state.bridge.get_article_content(id).await {
@@ -222,16 +222,16 @@ pub async fn handle_callback_query_inner(
                     "📖"
                 };
                 let status_text = if content.article.status == "read" {
-                    "Прочитано"
+                    "Read"
                 } else {
-                    "Не прочитано"
+                    "Unread"
                 };
 
                 let caption = format!(
                     "📄 <b>{}</b>\n\n\
-                     <b>Слов:</b> {} (~{} мин. чтения)\n\
-                     <b>Статус:</b> {} {}\n\
-                     <b>Оценка:</b> {}\n\
+                     <b>Words:</b> {} (~{} min read)\n\
+                     <b>Status:</b> {} {}\n\
+                     <b>Rating:</b> {}\n\
                      <b>ID:</b> <code>{}</code>",
                     views::escape_html(&content.article.title),
                     content.article.word_count,
@@ -271,7 +271,7 @@ pub async fn handle_callback_query_inner(
             .and_then(|s| s.parse().ok())
             .unwrap_or(0);
         state.bridge.mark_article_read(id).await.tg_err()?;
-        custom_ack = Some("Статус обновлен".to_string());
+        custom_ack = Some("Status updated".to_string());
         super::helpers::show_article_card_screen(
             bot.clone(),
             msg.chat.id,
@@ -287,7 +287,7 @@ pub async fn handle_callback_query_inner(
             .and_then(|s| s.parse().ok())
             .unwrap_or(0);
         state.bridge.mark_article_unread(id).await.tg_err()?;
-        custom_ack = Some("Статус обновлен".to_string());
+        custom_ack = Some("Status updated".to_string());
         super::helpers::show_article_card_screen(
             bot.clone(),
             msg.chat.id,
@@ -310,8 +310,8 @@ pub async fn handle_callback_query_inner(
             .and_then(|s| s.parse().ok())
             .unwrap_or(0);
         state.bridge.delete_article(id).await.tg_err()?;
-        custom_ack = Some("Материал удален".to_string());
-        let text = "🗑 <b>Материал успешно удален.</b>";
+        custom_ack = Some("Article deleted".to_string());
+        let text = "🗑 <b>Article successfully deleted.</b>";
         let markup = keyboards::back_to_hub_keyboard();
         super::helpers::show_state_screen(
             bot.clone(),
@@ -328,7 +328,7 @@ pub async fn handle_callback_query_inner(
             .nth(1)
             .and_then(|s| s.parse().ok())
             .unwrap_or(0);
-        let text = "⭐ <b>Пожалуйста, выберите оценку для материала:</b>";
+        let text = "⭐ <b>Please select a rating for the article:</b>";
         let markup = keyboards::rating_keyboard(id);
         super::helpers::show_state_screen(
             bot.clone(),
@@ -346,13 +346,13 @@ pub async fn handle_callback_query_inner(
             let val: i32 = parts[2].parse().unwrap_or(0);
             let rating = if val == 0 { None } else { Some(val) };
             state.bridge.rate_article(id, rating).await.tg_err()?;
-            custom_ack = Some("Оценка выставлена".to_string());
+            custom_ack = Some("Rating set".to_string());
 
             if rating.is_some() {
                 state
                     .set_pending_state(user.id, PendingState::WaitingForComment { article_id: id })
                     .await;
-                let text = "⭐ <b>Оценка успешно установлена!</b>\n\nНапишите текстовый комментарий к этому материалу и отправьте его в ответном сообщении. Если комментарий не нужен, просто нажмите кнопку ниже.";
+                let text = "⭐ <b>Rating successfully set!</b>\n\nWrite a text comment for this article and send it in a reply message. If you do not need a comment, just click the button below.";
                 let markup = keyboards::back_to_article_keyboard(id);
                 super::helpers::show_state_screen(
                     bot.clone(),
@@ -390,7 +390,7 @@ pub async fn handle_callback_query_inner(
         state
             .set_pending_state(user.id, PendingState::WaitingForComment { article_id: id })
             .await;
-        let text = "💬 <b>Пожалуйста, отправьте ваш комментарий следующим сообщением:</b>";
+        let text = "💬 <b>Please send your comment in the next message:</b>";
         let markup = keyboards::back_to_article_keyboard(id);
         super::helpers::show_state_screen(
             bot.clone(),
@@ -408,7 +408,7 @@ pub async fn handle_callback_query_inner(
             .and_then(|s| s.parse().ok())
             .unwrap_or(0);
         state.bridge.set_article_comment(id, None).await.tg_err()?;
-        custom_ack = Some("Комментарий удален".to_string());
+        custom_ack = Some("Comment deleted".to_string());
         super::helpers::show_article_card_screen(
             bot.clone(),
             msg.chat.id,
@@ -433,7 +433,7 @@ pub async fn handle_callback_query_inner(
         state
             .set_pending_state(user.id, PendingState::WaitingForTag { article_id: id })
             .await;
-        let text = "🏷 <b>Пожалуйста, отправьте название тега (или несколько через запятую):</b>";
+        let text = "🏷 <b>Please send the tag name (or multiple separated by commas):</b>";
         let markup = keyboards::back_to_article_keyboard(id);
         super::helpers::show_state_screen(
             bot.clone(),
@@ -450,7 +450,7 @@ pub async fn handle_callback_query_inner(
             let id: i64 = parts[1].parse().unwrap_or(0);
             let tag = parts[2];
             state.bridge.remove_tag(id, tag).await.tg_err()?;
-            custom_ack = Some("Тег удален".to_string());
+            custom_ack = Some("Tag deleted".to_string());
             show_article_tags(bot.clone(), msg, id, state.clone()).await?;
         }
     } else if data.starts_with("tags_list:") {
@@ -502,7 +502,7 @@ pub async fn handle_callback_query_inner(
             let mut map = state.user_formats.lock().await;
             map.insert(user.id, fmt);
             custom_ack = Some(format!(
-                "Формат скачивания изменен на {}",
+                "Download format changed to {}",
                 fmt.to_string().to_uppercase()
             ));
         }
@@ -516,7 +516,7 @@ pub async fn handle_callback_query_inner(
                 articles.push(content.article);
             }
         }
-        let text = views::render_articles_list(&articles, "Последние добавленные материалы", 0, 1);
+        let text = views::render_articles_list(&articles, "Recently added articles", 0, 1);
         let markup = keyboards::articles_list_keyboard(&articles, None, None, "hub");
         super::helpers::show_state_screen(
             bot.clone(),
@@ -529,9 +529,9 @@ pub async fn handle_callback_query_inner(
         .await?;
     } else if data == "show_import_errors" {
         let errs = state.get_last_errors(user.id).await;
-        let mut text = "⚠️ <b>Ошибки при последнем импорте:</b>\n\n".to_string();
+        let mut text = "⚠️ <b>Errors during last import:</b>\n\n".to_string();
         if errs.is_empty() {
-            text.push_str("Ошибок не обнаружено.");
+            text.push_str("No errors detected.");
         } else {
             for (i, err) in errs.iter().enumerate() {
                 text.push_str(&format!("{}. {}\n", i + 1, views::escape_html(err)));
@@ -548,7 +548,7 @@ pub async fn handle_callback_query_inner(
         )
         .await?;
     } else if data == "reset_lib_prompt" {
-        let text = "⚠️ <b>ВНИМАНИЕ!</b>\n\nЭто действие безвозвратно удалит ВСЕ сохраненные материалы, файлы и записи в базе данных.\n\nВы уверены?";
+        let text = "⚠️ <b>WARNING!</b>\n\nThis action will permanently delete ALL saved articles, files, and database records.\n\nAre you sure?";
         let markup = keyboards::reset_lib_confirm_keyboard();
         super::helpers::show_state_screen(
             bot.clone(),
@@ -561,8 +561,8 @@ pub async fn handle_callback_query_inner(
         .await?;
     } else if data == "reset_lib_confirm" {
         state.bridge.reset_library().await.tg_err()?;
-        custom_ack = Some("Библиотека сброшена".to_string());
-        let text = "✅ <b>Библиотека полностью очищена.</b>";
+        custom_ack = Some("Library reset".to_string());
+        let text = "✅ <b>Library has been completely cleared.</b>";
         let markup = keyboards::back_to_hub_keyboard();
         super::helpers::show_state_screen(
             bot.clone(),
@@ -580,7 +580,7 @@ pub async fn handle_callback_query_inner(
         state
             .set_pending_state(user.id, PendingState::WaitingForSearchQuery)
             .await;
-        let text = "🔎 <b>Введите поисковый запрос (текст или ключевые слова):</b>";
+        let text = "🔎 <b>Enter search query (text or keywords):</b>";
         let markup = keyboards::back_to_article_keyboard(0);
         super::helpers::show_state_screen(
             bot.clone(),
@@ -596,7 +596,7 @@ pub async fn handle_callback_query_inner(
             .set_pending_state(user.id, PendingState::WaitingForFilterDomain)
             .await;
         let text =
-            "🌐 <b>Введите домен сайта для фильтрации (например, habr.com или medium.com):</b>";
+            "🌐 <b>Enter website domain for filtering (e.g. habr.com or medium.com):</b>";
         let markup = keyboards::back_to_article_keyboard(0);
         super::helpers::show_state_screen(
             bot.clone(),
@@ -623,7 +623,7 @@ pub async fn handle_callback_query_inner(
         super::helpers::show_search_menu_screen(bot.clone(), msg.chat.id, state.clone(), user.id)
             .await?;
     } else if data == "sf_status" {
-        let text = "📝 <b>Выберите статус прочтения для фильтрации:</b>";
+        let text = "📝 <b>Select reading status for filtering:</b>";
         let markup = keyboards::search_status_select_keyboard();
         super::helpers::show_state_screen(
             bot.clone(),
@@ -648,7 +648,7 @@ pub async fn handle_callback_query_inner(
         super::helpers::show_search_menu_screen(bot.clone(), msg.chat.id, state.clone(), user.id)
             .await?;
     } else if data == "sf_rating" {
-        let text = "⭐ <b>Выберите оценку для фильтрации:</b>";
+        let text = "⭐ <b>Select rating for filtering:</b>";
         let markup = keyboards::search_rating_select_keyboard();
         super::helpers::show_state_screen(
             bot.clone(),
@@ -678,7 +678,7 @@ pub async fn handle_callback_query_inner(
         super::helpers::show_search_menu_screen(bot.clone(), msg.chat.id, state.clone(), user.id)
             .await?;
     } else if data == "sf_date" {
-        let text = "📅 <b>Выберите интервал добавления:</b>";
+        let text = "📅 <b>Select addition interval:</b>";
         let markup = keyboards::search_date_select_keyboard();
         super::helpers::show_state_screen(
             bot.clone(),
@@ -734,7 +734,7 @@ async fn show_delete_confirm(
     let user_id = msg.from().map(|u| u.id).unwrap_or(UserId(0));
     let content = state.bridge.get_article_content(id).await.tg_err()?;
     let text = format!(
-        "⚠️ <b>Вы уверены, что хотите удалить этот материал?</b>\n\n<b>{}</b>",
+        "⚠️ <b>Are you sure you want to delete this article?</b>\n\n<b>{}</b>",
         views::escape_html(&content.article.title)
     );
     let markup = keyboards::delete_confirm_keyboard(id);
@@ -753,9 +753,9 @@ async fn show_comment_menu(
         .article
         .comment
         .as_deref()
-        .unwrap_or("<i>комментарий отсутствует</i>");
+        .unwrap_or("<i>no comment</i>");
     let text = format!(
-        "💬 <b>Комментарий к статье:</b>\n\n<i>{}</i>",
+        "💬 <b>Article comment:</b>\n\n<i>{}</i>",
         views::escape_html(current_comm)
     );
     let markup = keyboards::comment_keyboard(id);
@@ -772,24 +772,24 @@ async fn show_article_tags(
     let content = state.bridge.get_article_content(id).await.tg_err()?;
     let mut rows = vec![];
     rows.push(vec![InlineKeyboardButton::callback(
-        "➕ Добавить тег",
+        "➕ Add tag",
         format!("tag_add:{}", id),
     )]);
 
     for t in &content.article.tags {
         rows.push(vec![InlineKeyboardButton::callback(
-            format!("❌ Удалить #{}", t),
+            format!("❌ Delete #{}", t),
             format!("tag_rem:{}:{}", id, t),
         )]);
     }
     rows.push(vec![InlineKeyboardButton::callback(
-        "🔙 Назад",
+        "🔙 Back",
         format!("art:{}", id),
     )]);
     let markup = InlineKeyboardMarkup::new(rows);
 
     let tags_text = if content.article.tags.is_empty() {
-        "нет тегов".to_string()
+        "no tags".to_string()
     } else {
         content
             .article
@@ -801,7 +801,7 @@ async fn show_article_tags(
     };
 
     let text = format!(
-        "🏷 <b>Теги материала:</b>\n\n<code>{}</code>",
+        "🏷 <b>Article tags:</b>\n\n<code>{}</code>",
         views::escape_html(&tags_text)
     );
     super::helpers::show_state_screen(bot, msg.chat.id, state, user_id, text, Some(markup)).await
@@ -848,7 +848,7 @@ async fn show_articles_by_tag(
 
     let text = views::render_articles_list(
         &paginated.articles,
-        &format!("Тег: #{}", tag),
+        &format!("Tag: #{}", tag),
         page,
         total_pages,
     );
@@ -890,9 +890,9 @@ async fn show_articles_by_rating(
     };
 
     let title = if rating == 0 {
-        "Материалы без оценки".to_string()
+        "Articles without rating".to_string()
     } else {
-        format!("Оценка: {} ⭐", rating)
+        format!("Rating: {} ⭐", rating)
     };
     let text = views::render_articles_list(&paginated.articles, &title, page, total_pages);
     let markup = keyboards::pagination_keyboard(prev_cb, next_cb, "ratings_list");
@@ -918,11 +918,11 @@ async fn show_search_tag_select(
         rows.push(row);
     }
     rows.push(vec![InlineKeyboardButton::callback(
-        "❌ Сбросить тег",
+        "❌ Reset tag",
         "sft_select:none",
     )]);
     rows.push(vec![InlineKeyboardButton::callback(
-        "🔙 Назад к поиску",
+        "🔙 Back to search",
         "search",
     )]);
     let markup = InlineKeyboardMarkup::new(rows);
@@ -932,7 +932,7 @@ async fn show_search_tag_select(
         msg.chat.id,
         state,
         user_id,
-        "🏷 <b>Выберите тег для фильтрации:</b>".to_string(),
+        "🏷 <b>Select tag for filtering:</b>".to_string(),
         Some(markup),
     )
     .await
@@ -979,7 +979,7 @@ async fn run_search(
     };
 
     let text =
-        views::render_articles_list(&paginated.articles, "Результаты поиска", page, total_pages);
+        views::render_articles_list(&paginated.articles, "Search results", page, total_pages);
     let markup = keyboards::articles_list_keyboard(&paginated.articles, prev_cb, next_cb, "search");
     super::helpers::show_state_screen(bot, msg.chat.id, state, user_id, text, Some(markup)).await
 }
@@ -994,7 +994,7 @@ async fn show_ratings_list(bot: Bot, msg: &Message, state: Arc<BotState>) -> Res
         )]);
     }
     rows.push(vec![InlineKeyboardButton::callback(
-        "❌ Без оценки",
+        "❌ Without rating",
         "srate:0:0",
     )]);
     rows.push(vec![InlineKeyboardButton::callback("🏠 В хаб", "hub")]);
@@ -1005,7 +1005,7 @@ async fn show_ratings_list(bot: Bot, msg: &Message, state: Arc<BotState>) -> Res
         msg.chat.id,
         state,
         user_id,
-        "⭐ <b>Выберите оценку для фильтрации:</b>".to_string(),
+        "⭐ <b>Select rating for filtering:</b>".to_string(),
         Some(markup),
     )
     .await

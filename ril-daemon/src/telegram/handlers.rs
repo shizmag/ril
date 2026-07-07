@@ -73,7 +73,7 @@ pub async fn handle_message(bot: Bot, msg: Message, state: Arc<BotState>) -> Res
                             .await
                             .tg_err()?;
                         let text_err = format!(
-                            "⚠️ <b>Ошибка: {}</b>\n\n💬 Введите комментарий к материалу:\n\n“{}”\n\nДо 1000 символов.\nДля отмены нажмите кнопку ниже или отправьте /cancel.",
+                            "⚠️ <b>Error: {}</b>\n\n💬 Enter a comment for the article:\n\n“{}”\n\nUp to 1000 characters.\nTo cancel, click the button below or send /cancel.",
                             err, views::escape_html(&content.article.title)
                         );
                         super::helpers::show_state_screen(
@@ -147,7 +147,7 @@ pub async fn handle_message(bot: Bot, msg: Message, state: Arc<BotState>) -> Res
         let sent = bot
             .send_message(
                 msg.chat.id,
-                "Неизвестная команда. Введите /help для просмотра списка команд.",
+                "Unknown command. Send /help to view the list of commands.",
             )
             .await?;
         spawn_delayed_delete(bot, msg.chat.id, sent.id, 5);
@@ -192,7 +192,7 @@ pub async fn handle_command(
                             .await?;
                     }
                     Err(_) => {
-                        let text = "Недопустимый формат. Поддерживаемые форматы: <b>markdown</b>, <b>html</b>, <b>epub</b>".to_string();
+                        let text = "Invalid format. Supported formats: <b>markdown</b>, <b>html</b>, <b>epub</b>".to_string();
                         let markup = keyboards::back_to_hub_keyboard();
                         super::helpers::show_state_screen(
                             bot,
@@ -251,7 +251,7 @@ pub async fn handle_command(
                 };
                 let text = views::render_articles_list(
                     &paginated.articles,
-                    &format!("Результаты поиска по \"{}\"", query),
+                    &format!("Search results for \"{}\"", query),
                     0,
                     total_pages,
                 );
@@ -277,7 +277,7 @@ pub async fn handle_command(
                         msg.chat.id,
                         state,
                         user.id,
-                        "Укажите числовой ID: /get <id>",
+                        "Specify a numeric ID: /get <id>",
                     )
                     .await?;
                     return Ok(());
@@ -296,10 +296,10 @@ pub async fn handle_command(
                         let doc = InputFile::file(file_path);
                         let caption = format!(
                             "📥 <b>{} [{}]</b>\n\n\
-                             <b>Формат:</b> {}\n\
-                             <b>Слов:</b> {} (~{} мин. чтения)\n\
-                             <b>Статус:</b> {} {}\n\
-                             <b>Оценка:</b> {}",
+                             <b>Format:</b> {}\n\
+                             <b>Words:</b> {} (~{} min read)\n\
+                             <b>Status:</b> {} {}\n\
+                             <b>Rating:</b> {}",
                             views::escape_html(&export_res.title),
                             export_res.article_id,
                             export_res.format.to_uppercase(),
@@ -311,13 +311,13 @@ pub async fn handle_command(
                                 "📖"
                             },
                             if export_res.status == "read" {
-                                "Прочитано"
+                                "Read"
                             } else {
-                                "Не прочитано"
+                                "Unread"
                             },
                             match export_res.rating {
                                 Some(r) => "⭐".repeat(r as usize),
-                                None => "нет оценки".to_string(),
+                                None => "no rating".to_string(),
                             }
                         );
                         let markup = keyboards::document_keyboard(id, &export_res.status);
@@ -342,7 +342,7 @@ pub async fn handle_command(
                             msg.chat.id,
                             state,
                             user.id,
-                            "Файл не найден на диске.",
+                            "File not found on disk.",
                         )
                         .await?;
                     }
@@ -353,7 +353,7 @@ pub async fn handle_command(
                         msg.chat.id,
                         state,
                         user.id,
-                        &format!("Ошибка при экспорте статьи: {}", e),
+                        &format!("Error exporting article: {}", e),
                     )
                     .await?;
                 }
@@ -368,7 +368,7 @@ pub async fn handle_command(
                         msg.chat.id,
                         state,
                         user.id,
-                        "Укажите числовой ID: /read <id>",
+                        "Specify a numeric ID: /read <id>",
                     )
                     .await?;
                     return Ok(());
@@ -385,7 +385,7 @@ pub async fn handle_command(
                         msg.chat.id,
                         state,
                         user.id,
-                        "Материал не найден.",
+                        "Article not found.",
                     )
                     .await?;
                 }
@@ -395,7 +395,7 @@ pub async fn handle_command(
                         msg.chat.id,
                         state,
                         user.id,
-                        &format!("Ошибка: {}", e),
+                        &format!("Error: {}", e),
                     )
                     .await?;
                 }
@@ -410,7 +410,7 @@ pub async fn handle_command(
                         msg.chat.id,
                         state,
                         user.id,
-                        "Укажите числовой ID: /unread <id>",
+                        "Specify a numeric ID: /unread <id>",
                     )
                     .await?;
                     return Ok(());
@@ -427,7 +427,7 @@ pub async fn handle_command(
                         msg.chat.id,
                         state,
                         user.id,
-                        "Материал не найден.",
+                        "Article not found.",
                     )
                     .await?;
                 }
@@ -437,7 +437,7 @@ pub async fn handle_command(
                         msg.chat.id,
                         state,
                         user.id,
-                        &format!("Ошибка: {}", e),
+                        &format!("Error: {}", e),
                     )
                     .await?;
                 }
@@ -452,7 +452,7 @@ pub async fn handle_command(
                         msg.chat.id,
                         state,
                         user.id,
-                        "Укажите числовой ID: /delete <id>",
+                        "Specify a numeric ID: /delete <id>",
                     )
                     .await?;
                     return Ok(());
@@ -462,7 +462,7 @@ pub async fn handle_command(
             match state.bridge.get_article_content(id).await.tg_err() {
                 Ok(content) => {
                     let text = format!(
-                        "⚠️ <b>Вы уверены, что хотите удалить этот материал?</b>\n\n<b>{}</b>",
+                        "⚠️ <b>Are you sure you want to delete this article?</b>\n\n<b>{}</b>",
                         views::escape_html(&content.article.title)
                     );
                     let markup = keyboards::delete_confirm_keyboard(id);
@@ -482,7 +482,7 @@ pub async fn handle_command(
                         msg.chat.id,
                         state,
                         user.id,
-                        "Материал не найден.",
+                        "Article not found.",
                     )
                     .await?;
                 }
@@ -493,8 +493,8 @@ pub async fn handle_command(
                 let mut pending = state.pending_resets.lock().await;
                 pending.insert(user.id);
             }
-            let text = "⚠️ <b>ВНИМАНИЕ:</b> Все файлы, материалы и базы данных будут удалены.\n\n\
-                        Подтвердите сброс командой /confirmreset или отмените с помощью /cancel.";
+            let text = "⚠️ <b>WARNING:</b> All files, articles, and databases will be deleted.\n\n\
+                        Confirm reset with the command /confirmreset or cancel using /cancel.";
             let markup = keyboards::reset_lib_confirm_keyboard();
             super::helpers::show_state_screen(
                 bot,
@@ -514,7 +514,7 @@ pub async fn handle_command(
             if is_pending {
                 match state.bridge.reset_library().await.tg_err() {
                     Ok(_) => {
-                        let text = "✅ <b>Библиотека успешно очищена.</b>";
+                        let text = "✅ <b>Library successfully cleared.</b>";
                         let markup = keyboards::back_to_hub_keyboard();
                         super::helpers::show_state_screen(
                             bot,
@@ -532,7 +532,7 @@ pub async fn handle_command(
                             msg.chat.id,
                             state,
                             user.id,
-                            &format!("Ошибка при сбросе: {}", e),
+                            &format!("Error resetting: {}", e),
                         )
                         .await?;
                     }
@@ -543,7 +543,7 @@ pub async fn handle_command(
                     msg.chat.id,
                     state,
                     user.id,
-                    "Нет активного запроса на сброс. Введите /reset.",
+                    "No active reset request. Type /reset.",
                 )
                 .await?;
             }
@@ -593,7 +593,7 @@ pub async fn handle_urls(
     let chat_id = msg.chat.id;
 
     // Show initial status screen in the state message
-    let status_text = format!("⏳ <b>Импорт {} ссылок...</b>", urls.len());
+    let status_text = format!("⏳ <b>Importing {} links...</b>", urls.len());
     super::helpers::show_state_screen(
         bot.clone(),
         chat_id,
@@ -637,15 +637,15 @@ pub async fn handle_urls(
     state.set_last_errors(user.id, errors.clone()).await;
 
     // Format the results screen
-    let mut text_res = "✅ <b>Импорт завершен</b>\n\n".to_string();
-    text_res.push_str(&format!("Добавлено: <b>{}</b>\n", imported.len()));
-    text_res.push_str(&format!("Ошибок: <b>{}</b>\n\n", errors.len()));
+    let mut text_res = "✅ <b>Import finished</b>\n\n".to_string();
+    text_res.push_str(&format!("Added: <b>{}</b>\n", imported.len()));
+    text_res.push_str(&format!("Errors: <b>{}</b>\n\n", errors.len()));
 
     for (i, res) in imported.iter().enumerate() {
         let domain = views::format_domain(&res.url);
         let read_time = (res.word_count as f64 / 200.0).ceil() as i64;
         text_res.push_str(&format!(
-            "{}. {} — {} — {} мин\n",
+            "{}. {} — {} — {} min\n",
             i + 1,
             views::escape_html(&res.title),
             domain,

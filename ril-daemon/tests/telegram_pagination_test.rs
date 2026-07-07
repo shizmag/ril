@@ -14,7 +14,7 @@ fn test_pagination_first_page() {
     let rows = kb.inline_keyboard;
     assert_eq!(rows.len(), 2); // row of arrows, row of home
     assert_eq!(rows[0].len(), 1);
-    assert_eq!(rows[0][0].text, "➡️ Далее");
+    assert_eq!(rows[0][0].text, "➡️ Next");
 }
 
 #[test]
@@ -28,8 +28,8 @@ fn test_pagination_middle_page() {
     let kb = pagination_keyboard(Some("prev".to_string()), Some("next".to_string()), "home");
     let rows = kb.inline_keyboard;
     assert_eq!(rows[0].len(), 2);
-    assert_eq!(rows[0][0].text, "⬅️ Назад");
-    assert_eq!(rows[0][1].text, "➡️ Далее");
+    assert_eq!(rows[0][0].text, "⬅️ Back");
+    assert_eq!(rows[0][1].text, "➡️ Next");
 }
 
 #[test]
@@ -43,7 +43,7 @@ fn test_pagination_last_page() {
     let kb = pagination_keyboard(Some("prev".to_string()), None, "home");
     let rows = kb.inline_keyboard;
     assert_eq!(rows[0].len(), 1);
-    assert_eq!(rows[0][0].text, "⬅️ Назад");
+    assert_eq!(rows[0][0].text, "⬅️ Back");
 }
 
 #[test]

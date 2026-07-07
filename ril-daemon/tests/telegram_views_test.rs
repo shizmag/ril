@@ -69,9 +69,9 @@ fn test_render_article_card() {
         snippet: None,
     };
     let card2 = render_article_card(&art2);
-    assert!(card2.contains("<i>нет оценки</i>"));
-    assert!(!card2.contains("Комментарий:"));
-    assert!(card2.contains("<i>нет тегов</i>"));
+    assert!(card2.contains("<i>no rating</i>"));
+    assert!(!card2.contains("Comment:"));
+    assert!(card2.contains("<i>no tags</i>"));
 }
 
 #[test]
@@ -109,16 +109,16 @@ fn test_render_articles_list() {
 
     let rendered = render_articles_list(&list, "My List", 0, 2);
     assert!(rendered.contains("My List"));
-    assert!(rendered.contains("Страница 1 из 2"));
+    assert!(rendered.contains("Page 1 of 2"));
     assert!(rendered.contains("<b>1. A</b>"));
     assert!(rendered.contains("<b>2. B</b>"));
-    assert!(rendered.contains("📖 непрочитано"));
-    assert!(rendered.contains("✅ прочитано"));
+    assert!(rendered.contains("📖 unread"));
+    assert!(rendered.contains("✅ read"));
     assert!(rendered.contains("⭐ 5"));
 
     // Empty list
     let rendered_empty = render_articles_list(&[], "Empty", 0, 0);
-    assert!(rendered_empty.contains("Список пуст."));
+    assert!(rendered_empty.contains("List is empty."));
 }
 
 #[test]
@@ -151,9 +151,9 @@ fn test_render_stats_overview() {
     };
 
     let rendered = render_stats_overview(&stats);
-    assert!(rendered.contains("Общая статистика библиотеки"));
-    assert!(rendered.contains("прогресс 40.0%"));
-    assert!(rendered.contains("Средняя оценка: <b>4.20</b> ⭐"));
+    assert!(rendered.contains("General Library Statistics"));
+    assert!(rendered.contains("progress 40.0%"));
+    assert!(rendered.contains("Average rating: <b>4.20</b> ⭐"));
     assert!(rendered.contains("Top 1 - ⭐⭐⭐⭐⭐"));
 }
 
@@ -170,11 +170,11 @@ fn test_render_sources_stats() {
         },
     ];
     let rendered = render_sources_stats(&sources);
-    assert!(rendered.contains("Топ доменов и источников"));
+    assert!(rendered.contains("Top domains and sources"));
     assert!(rendered.contains("<code>habr.com</code> — <b>5</b>"));
 
     let empty = render_sources_stats(&[]);
-    assert!(empty.contains("Нет данных об источниках."));
+    assert!(empty.contains("No data on sources."));
 }
 
 #[test]
@@ -184,11 +184,11 @@ fn test_render_tags_stats() {
         count: 8,
     }];
     let rendered = render_tags_stats(&tags);
-    assert!(rendered.contains("Популярные теги"));
+    assert!(rendered.contains("Popular tags"));
     assert!(rendered.contains("<code>#rust</code> — <b>8</b>"));
 
     let empty = render_tags_stats(&[]);
-    assert!(empty.contains("Тегов пока нет."));
+    assert!(empty.contains("No tags yet."));
 }
 
 #[test]
@@ -198,7 +198,7 @@ fn test_render_ratings_stats() {
     map.insert("4".to_string(), 1);
 
     let rendered = render_ratings_stats(&map);
-    assert!(rendered.contains("Распределение оценок"));
+    assert!(rendered.contains("Rating distribution"));
     assert!(rendered.contains("5 ⭐: <b>3</b> 🟩🟩🟩"));
     assert!(rendered.contains("4 ⭐: <b>1</b> 🟩"));
     assert!(rendered.contains("3 ⭐: <b>0</b>"));
@@ -212,8 +212,8 @@ fn test_render_dynamics_stats() {
         month: 12,
     };
     let rendered = render_dynamics_stats(&d);
-    assert!(rendered.contains("Динамика добавления материалов"));
-    assert!(rendered.contains("сегодня: <b>1</b>"));
-    assert!(rendered.contains("неделю (7 дней): <b>4</b>"));
-    assert!(rendered.contains("месяц (30 дней): <b>12</b>"));
+    assert!(rendered.contains("Article addition dynamics"));
+    assert!(rendered.contains("Added today: <b>1</b>"));
+    assert!(rendered.contains("Added this week (7 days): <b>4</b>"));
+    assert!(rendered.contains("Added this month (30 days): <b>12</b>"));
 }
