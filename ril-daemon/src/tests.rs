@@ -64,7 +64,7 @@ async fn test_mock_bridge_lifecycle() {
 
     // Add article
     let res = bridge
-        .process_url("http://example.com/test", SaveFormat::Html, false)
+        .process_url("http://example.com/test", SaveFormat::Html, false, false, false)
         .await
         .unwrap();
     assert_eq!(res.id, 2);
@@ -72,7 +72,7 @@ async fn test_mock_bridge_lifecycle() {
 
     // Adding duplicate without force should fail
     let dup_res = bridge
-        .process_url("http://example.com/test", SaveFormat::Html, false)
+        .process_url("http://example.com/test", SaveFormat::Html, false, false, false)
         .await;
     assert!(dup_res.is_err());
     let err_str = dup_res.unwrap_err().to_string();
@@ -80,7 +80,7 @@ async fn test_mock_bridge_lifecycle() {
 
     // Adding duplicate with force should succeed
     let force_res = bridge
-        .process_url("http://example.com/test", SaveFormat::Html, true)
+        .process_url("http://example.com/test", SaveFormat::Html, true, false, false)
         .await
         .unwrap();
     assert_eq!(force_res.id, 2);

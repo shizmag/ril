@@ -405,7 +405,11 @@ pub fn tags_list_keyboard(tags: &[TagStat], page: i64, total_pages: i64) -> Inli
     InlineKeyboardMarkup::new(rows)
 }
 
-pub fn settings_keyboard(current_format: &str) -> InlineKeyboardMarkup {
+pub fn settings_keyboard(
+    current_format: &str,
+    rasterize_svg: bool,
+    force_ocr: bool,
+) -> InlineKeyboardMarkup {
     InlineKeyboardMarkup::new(vec![
         vec![
             InlineKeyboardButton::callback(
@@ -431,6 +435,24 @@ pub fn settings_keyboard(current_format: &str) -> InlineKeyboardMarkup {
                     "EPUB"
                 },
                 "set_fmt:epub",
+            ),
+        ],
+        vec![
+            InlineKeyboardButton::callback(
+                if rasterize_svg {
+                    "🎨 Rasterize SVG: ON"
+                } else {
+                    "🎨 Rasterize SVG: OFF"
+                },
+                "toggle_svg",
+            ),
+            InlineKeyboardButton::callback(
+                if force_ocr {
+                    "🔍 Force OCR: ON"
+                } else {
+                    "🔍 Force OCR: OFF"
+                },
+                "toggle_ocr",
             ),
         ],
         vec![InlineKeyboardButton::callback(

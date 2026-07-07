@@ -63,7 +63,7 @@ def download_pdf(url: str) -> Path:
     return temp_pdf_path
 
 
-def convert_pdf_with_marker(pdf_path: Path) -> tuple:
+def convert_pdf_with_marker(pdf_path: Path, force_ocr: bool = False) -> tuple:
     """
     Convert a local PDF file to Markdown using marker-pdf.
 
@@ -80,10 +80,13 @@ def convert_pdf_with_marker(pdf_path: Path) -> tuple:
     from marker.output import text_from_rendered
 
     os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
+    if force_ocr:
+        os.environ["FORCE_OCR"] = "1"
+        os.environ["EXTRACT_IMAGES"] = "True"
 
     logger.info("Initializing marker-pdf models...")
     models = create_model_dict()
-    config_parser = ConfigParser({"output_format": "markdown", "disable_ocr": True})
+    config_parser = ConfigParser({"output_format": "markdown", "disable_ocr": not force_ocr})
 
     converter_cls = config_parser.get_converter_cls()
     converter_obj = converter_cls(
@@ -107,7 +110,9 @@ def convert_pdf_with_marker(pdf_path: Path) -> tuple:
 async def process_url(
     url: str,
     converter: Optional[BaseConverter] = None,
-    force: bool = False
+    force: bool = False,
+    rasterize_svg: bool = False,
+    force_ocr: bool = False
 ) -> Dict[str, Any]:
     """
     Run the full Read It Later pipeline for a URL.
@@ -126,7 +131,7 @@ async def process_url(
         from ril.converters import EPUBConverter
         converter = EPUBConverter()
         
-    logger.info(f"Processing URL: {url}")
+    logger.info(f"Processing URL: {url} (rasterize_svg={rasterize_svg}, force_ocr={force_ocr})")
     
     url_lower = url.lower()
     is_pdf = url_lower.split('?')[0].endswith('.pdf') or '/pdf/' in url_lower
@@ -140,7 +145,7 @@ async def process_url(
             raise e
     else:
         try:
-            html = await fetch_html(url)
+            html = await fetch_html(url, rasterize_svg=rasterize_svg)
         except Exception as e:
             if "Download is starting" in str(e):
                 is_pdf = True
@@ -160,7 +165,7 @@ async def process_url(
             import base64
             import io
 
-            pdf_markdown, pdf_title, images = convert_pdf_with_marker(temp_pdf_path)
+            pdf_markdown, pdf_title, images = convert_pdf_with_marker(temp_pdf_path, force_ocr=force_ocr)
 
             if not pdf_title:
                 url_path = url.split('?')[0].split('/')[-1]

@@ -182,13 +182,14 @@ async def fetch_html(
     url: str,
     headless: bool = CRAWLER_HEADLESS,
     stealth: bool = CRAWLER_STEALTH,
-    timeout_ms: int = CRAWLER_TIMEOUT_MS
+    timeout_ms: int = CRAWLER_TIMEOUT_MS,
+    rasterize_svg: bool = False
 ) -> str:
     """
     Fetch raw HTML from a URL using Playwright.
     Bypasses JS rendering issues and basic anti-scraping blocks.
     """
-    logger.info(f"Crawling URL: {url}")
+    logger.info(f"Crawling URL: {url} (rasterize_svg={rasterize_svg})")
     
     async with async_playwright() as p:
         # Launch browser
@@ -235,6 +236,41 @@ async def fetch_html(
             
             # Trigger lazy loading of images
             await trigger_lazy_loading(page)
+            
+            if rasterize_svg:
+                logger.info("Executing client-side SVG rasterization...")
+                rasterize_script = """
+                () => {
+                    const svgs = document.querySelectorAll('svg');
+                    svgs.forEach(svg => {
+                        try {
+                            const rect = svg.getBoundingClientRect();
+                            const width = rect.width || svg.getAttribute('width') || 'auto';
+                            const height = rect.height || svg.getAttribute('height') || 'auto';
+                            
+                            const xml = new XMLSerializer().serializeToString(svg);
+                            const base64 = btoa(unescape(encodeURIComponent(xml)));
+                            
+                            const img = document.createElement('img');
+                            img.src = 'data:image/svg+xml;base64,' + base64;
+                            
+                            if (width !== 'auto' && width > 0) {
+                                img.style.width = width + 'px';
+                                img.width = width;
+                            }
+                            if (height !== 'auto' && height > 0) {
+                                img.style.height = height + 'px';
+                                img.height = height;
+                            }
+                            
+                            svg.parentNode.replaceChild(img, svg);
+                        } catch (e) {
+                            console.error('Failed to rasterize SVG:', e);
+                        }
+                    });
+                }
+                """
+                await page.evaluate(rasterize_script)
             
             # Get the complete rendered HTML content
             html = await page.content()

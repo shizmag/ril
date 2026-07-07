@@ -119,8 +119,16 @@ pub(crate) async fn handle_tool_call(
                 .get("force")
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false);
+            let rasterize_svg = arguments
+                .get("rasterize_svg")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            let force_ocr = arguments
+                .get("force_ocr")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
             let res = bridge
-                .process_url(url, format, force)
+                .process_url(url, format, force, rasterize_svg, force_ocr)
                 .await
                 .map_err(|e| e.to_string())?;
             Ok(json!({

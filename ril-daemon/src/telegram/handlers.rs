@@ -604,6 +604,15 @@ pub async fn handle_urls(
     )
     .await?;
 
+    let rasterize_svg = {
+        let map = state.user_rasterize_svg.lock().await;
+        *map.get(&user.id).unwrap_or(&false)
+    };
+    let force_ocr = {
+        let map = state.user_force_ocr.lock().await;
+        *map.get(&user.id).unwrap_or(&false)
+    };
+
     let bridge = state.bridge.clone();
     let sem = Arc::new(tokio::sync::Semaphore::new(2));
 
@@ -615,7 +624,7 @@ pub async fn handle_urls(
 
         let handle = tokio::spawn(async move {
             let _permit = sem.acquire().await.unwrap();
-            bridge.process_url(&url, import_format, force).await
+            bridge.process_url(&url, import_format, force, rasterize_svg, force_ocr).await
         });
         join_handles.push(handle);
     }

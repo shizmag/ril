@@ -166,6 +166,8 @@ async fn test_two_screens_flow() {
             "https://example.com/unique-test-url",
             ril_daemon::domain::SaveFormat::Epub,
             false,
+            false,
+            false,
         )
         .await
         .unwrap();

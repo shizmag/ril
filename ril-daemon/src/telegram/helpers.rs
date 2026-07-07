@@ -222,13 +222,27 @@ pub async fn show_settings_screen(
     }
     .to_string();
 
+    let rasterize_svg = {
+        let map = state.user_rasterize_svg.lock().await;
+        *map.get(&user_id).unwrap_or(&false)
+    };
+
+    let force_ocr = {
+        let map = state.user_force_ocr.lock().await;
+        *map.get(&user_id).unwrap_or(&false)
+    };
+
     let text = format!(
         "⚙️ <b>Settings</b>\n\n\
-         Current download format: <b>{}</b>\n\n\
-         This format is applied when downloading any articles, including already saved ones.",
-        current_fmt.to_uppercase()
+         Current download format: <b>{}</b>\n\
+         Rasterize SVG charts: <b>{}</b>\n\
+         Forced OCR for PDFs: <b>{}</b>\n\n\
+         These configurations are applied when processing articles.",
+        current_fmt.to_uppercase(),
+        if rasterize_svg { "ENABLED ✅" } else { "DISABLED ❌" },
+        if force_ocr { "ENABLED ✅" } else { "DISABLED ❌" }
     );
-    let markup = keyboards::settings_keyboard(&current_fmt);
+    let markup = keyboards::settings_keyboard(&current_fmt, rasterize_svg, force_ocr);
     show_state_screen(bot, chat_id, state, user_id, text, Some(markup)).await
 }
 

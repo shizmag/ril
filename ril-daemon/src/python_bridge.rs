@@ -705,18 +705,21 @@ impl PythonBridge {
         Ok(typed)
     }
 
-    // Direct methods for easier usage:
     pub async fn process_url(
         &self,
         url: &str,
         format: SaveFormat,
         force: bool,
+        rasterize_svg: bool,
+        force_ocr: bool,
     ) -> Result<ProcessingResult> {
         #[derive(Serialize)]
         struct Args<'a> {
             url: &'a str,
             format: &'a str,
             force: bool,
+            rasterize_svg: bool,
+            force_ocr: bool,
         }
         self.call(
             "process_url",
@@ -724,6 +727,8 @@ impl PythonBridge {
                 url,
                 format: &format.to_string(),
                 force,
+                rasterize_svg,
+                force_ocr,
             },
         )
         .await

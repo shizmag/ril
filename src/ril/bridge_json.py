@@ -9,6 +9,8 @@ async def handle_process_url(args):
     url = args.get("url")
     fmt = args.get("format", "epub")
     force = bool(args.get("force", False))
+    rasterize_svg = bool(args.get("rasterize_svg", False))
+    force_ocr = bool(args.get("force_ocr", False))
     if fmt == "html":
         converter = HTMLConverter()
     elif fmt == "epub":
@@ -16,7 +18,13 @@ async def handle_process_url(args):
     else:
         converter = MarkdownConverter()
     
-    result = await core.process_url(url, converter=converter, force=force)
+    result = await core.process_url(
+        url,
+        converter=converter,
+        force=force,
+        rasterize_svg=rasterize_svg,
+        force_ocr=force_ocr
+    )
     return result
 
 async def handle_search_articles(args):
