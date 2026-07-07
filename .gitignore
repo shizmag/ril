@@ -29,3 +29,5 @@ ril-daemon/target/
 *.profdata
 
 src/library/*
+.ctx-codegraph/
+.ctx_*/
