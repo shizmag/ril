@@ -381,7 +381,23 @@ async def process_url(
                     img_format = img_obj.format if img_obj.format else "JPEG"
                     if img_obj.mode != "RGB" and img_format in ("JPEG", "JPG"):
                         img_obj = img_obj.convert("RGB")
-                    img_obj.save(buffered, format=img_format)
+                    try:
+                        from PIL import ImageFile
+                        ImageFile.LOAD_TRUNCATED_IMAGES = True
+                        img_obj.load()
+                        img_obj.save(buffered, format=img_format)
+                    except Exception as save_err:
+                        logger.warning(f"Failed to save image {img_name} as {img_format}: {save_err}. Falling back to PNG.")
+                        buffered = io.BytesIO()
+                        img_format = "PNG"
+                        try:
+                            if img_obj.mode not in ("RGB", "RGBA"):
+                                img_obj = img_obj.convert("RGBA" if "transparency" in img_obj.info or img_obj.mode == "P" else "RGB")
+                            img_obj.save(buffered, format="PNG")
+                        except Exception as png_err:
+                            logger.error(f"Failed to save image {img_name} as PNG fallback: {png_err}")
+                            continue
+
                     img_b64 = base64.b64encode(buffered.getvalue()).decode("utf-8")
                     mime_type = f"image/{img_format.lower()}"
                     if mime_type == "image/jpg":
