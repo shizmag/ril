@@ -264,3 +264,31 @@ async def test_process_url_duplicate_check(mocker, setup_test_environment):
     assert res2["id"] == res1["id"]
 
 
+@pytest.mark.asyncio
+async def test_process_url_hybrid_ocr_pipeline(mocker, setup_test_environment):
+    # Mock crawler HTML fetching
+    mocker.patch("ril.core.fetch_html", new_callable=AsyncMock, return_value="<html>Raw HTML</html>")
+    
+    # Mock readability cleaning
+    mocker.patch("ril.core.extract_article", return_value=("Hybrid Math Page", "<div>Math formula body</div>"))
+    
+    # Mock playwright PDF rendering
+    mock_render = AsyncMock()
+    mocker.patch("ril.core.render_html_to_pdf", mock_render)
+    
+    # Mock convert_pdf_with_marker
+    mock_marker = mocker.patch("ril.core.convert_pdf_with_marker", return_value=("# Hybrid Math Page\n\nParsed formula body.", "Hybrid Math Page", {}))
+    
+    url = "https://example.com/math-page"
+    
+    # Run the pipeline with force_ocr=True
+    result = await core.process_url(url, force_ocr=True)
+    
+    # Assertions
+    assert result["title"] == "Hybrid Math Page"
+    assert result["url"] == url
+    assert mock_render.called
+    assert mock_marker.called
+    assert result["word_count"] > 0
+
+

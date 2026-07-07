@@ -681,6 +681,43 @@ def preprocess_formulas(soup: BeautifulSoup, to_markdown: bool = False) -> None:
             text_node.decompose()
 
 
+def is_formula_img(img) -> bool:
+    keywords = ['math', 'tex', 'eq', 'formula', 'katex']
+    # Check classes
+    classes = img.get("class", [])
+    if isinstance(classes, str):
+        classes = [classes]
+    if any(any(kw in c.lower() for kw in keywords) for c in classes):
+        return True
+    # Check other attributes
+    for attr, val in img.attrs.items():
+        val_str = ""
+        if isinstance(val, list):
+            val_str = " ".join(val)
+        elif isinstance(val, str):
+            val_str = val
+        if val_str:
+            if val_str.startswith("data:"):
+                # Avoid scanning base64 payload to prevent false positives (e.g. 'eq' in base64 payload)
+                header = val_str.split(",", 1)[0]
+                if any(kw in header.lower() for kw in keywords):
+                    return True
+                continue
+            if any(kw in val_str.lower() for kw in keywords):
+                return True
+    return False
+
+
+def validate_and_normalize_math(md_content: str) -> str:
+    """
+    Validate and normalize mathematical formulas to be standard Pandoc markdown compliant.
+    Specifically, wraps display equations in $$...$$ and inline equations in $...$.
+    """
+    content = re.sub(r'\\\[(.*?)\\\]', r'$$\1$$', md_content, flags=re.DOTALL)
+    content = re.sub(r'\\\((.*?)\\\)', r'$\1$', content, flags=re.DOTALL)
+    return content
+
+
 def preprocess_html(html: str) -> str:
     """Preprocess HTML to decompose useless elements, strip tracking, and unwrap meaningless tags."""
     soup = BeautifulSoup(html, "lxml")
@@ -698,10 +735,7 @@ def preprocess_html(html: str) -> str:
                 continue
         # DO NOT decompose math formula images
         if tag.name == "img":
-            classes = tag.get("class", [])
-            if isinstance(classes, str):
-                classes = [classes]
-            if any("formula" in c for c in classes) or any("katex" in c for c in classes) or any("math" in c for c in classes):
+            if is_formula_img(tag):
                 continue
         tag.decompose()
         
@@ -1103,7 +1137,7 @@ class MarkdownConverter(BaseConverter):
         
         # 1. Download/resolve images and rewrite URLs in HTML to reference IDs
         logger.info(f"Embedding images as reference base64 for article: {article_slug}")
-        html_with_refs, image_refs = await self._prepare_base64_references(html_content, base_url)
+        html_with_refs, image_refs, formula_refs = await self._prepare_base64_references(html_content, base_url)
         
         # 2. Convert HTML to Markdown using custom converter
         logger.info("Converting HTML to Markdown")
@@ -1119,11 +1153,19 @@ class MarkdownConverter(BaseConverter):
         # 4. Post-process to replace inline references with reference-style links
         # Replace `![alt](img_ref_N)` with `![alt][img_ref_N]`
         for ref_id in image_refs.keys():
-            markdown_content = re.sub(
-                rf'!\[(.*?)\]\({ref_id}\)',
-                rf'![\1][{ref_id}]',
-                markdown_content
-            )
+            if ref_id in formula_refs:
+                # Suspected formula image. Wrap tightly in standard Markdown math delimiters
+                markdown_content = re.sub(
+                    rf'!\[(.*?)\]\({ref_id}\)',
+                    rf'$$![\1][{ref_id}]$$',
+                    markdown_content
+                )
+            else:
+                markdown_content = re.sub(
+                    rf'!\[(.*?)\]\({ref_id}\)',
+                    rf'![\1][{ref_id}]',
+                    markdown_content
+                )
             
         # 5. Append references at the end
         if image_refs:
@@ -1131,25 +1173,29 @@ class MarkdownConverter(BaseConverter):
             for ref_id, b64_uri in image_refs.items():
                 markdown_content += f"[{ref_id}]: {b64_uri}\n"
                 
+        # 6. Apply validate_and_normalize_math to standard delimiters
+        markdown_content = validate_and_normalize_math(markdown_content)
+                
         return markdown_content
 
-    async def _prepare_base64_references(self, html_content: str, base_url: str) -> Tuple[str, Dict[str, str]]:
+    async def _prepare_base64_references(self, html_content: str, base_url: str) -> Tuple[str, Dict[str, str], set]:
         """
         Finds all image tags, downloads/resolves the images concurrently, and converts them to base64 URIs.
         Replaces the img src in HTML with a reference ID (e.g. img_ref_1).
         Supports web URLs, local file paths, and base64 URIs (which are decoded, optimized, and re-encoded).
-        Returns the modified HTML and a dictionary mapping reference ID -> base64 URI.
+        Returns the modified HTML, a dictionary mapping reference ID -> base64 URI, and a set of reference IDs that are formulas.
         """
         soup = BeautifulSoup(html_content, "lxml")
         img_tags = soup.find_all("img")
         
         if not img_tags:
-            return str(soup), {}
+            return str(soup), {}, set()
 
         download_tasks = []
         img_rewrites = []
         semaphore = asyncio.Semaphore(3)
         image_refs = {}
+        formula_refs = set()
         
         async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
             for idx, img in enumerate(img_tags):
@@ -1159,6 +1205,9 @@ class MarkdownConverter(BaseConverter):
                 
                 ref_id = f"img_ref_{idx}"
                 img["src"] = ref_id
+                
+                if is_formula_img(img):
+                    formula_refs.add(ref_id)
                 
                 # A. Base64 encoded images
                 if src.startswith("data:image/"):
@@ -1253,7 +1302,7 @@ class MarkdownConverter(BaseConverter):
                         b64_str = base64.b64encode(img_bytes).decode("utf-8")
                         image_refs[ref_id] = f"data:{mime_type};base64,{b64_str}"
                         
-        return str(soup), image_refs
+        return str(soup), image_refs, formula_refs
 
 
 
