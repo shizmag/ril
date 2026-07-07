@@ -472,7 +472,7 @@ def test_image_optimization_transparency():
     res_transparent = converter._optimize_image(transparent_bytes, "image/png")
     assert res_transparent is not None
     optimized_transparent_bytes, mime_transparent = res_transparent
-    assert mime_transparent == "image/png"  # Kept as PNG because of transparency!
+    assert mime_transparent in ("image/png", "image/webp")  # Kept as PNG or WebP because of transparency!
 
 
 @pytest.mark.asyncio

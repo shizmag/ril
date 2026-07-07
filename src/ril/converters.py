@@ -7,6 +7,7 @@ import logging
 import asyncio
 import zipfile
 import uuid
+import mimetypes
 from abc import ABC, abstractmethod
 from typing import Optional, Tuple, Dict, Any
 from urllib.parse import urljoin, urlparse, parse_qs, urlunparse, urlencode, unquote, quote
@@ -14,6 +15,8 @@ from pathlib import Path
 import httpx
 from bs4 import BeautifulSoup
 import markdownify
+import latex2mathml.converter
+from mathml_to_latex import MathMLToLaTeX
 
 from ril import config
 
@@ -116,19 +119,18 @@ class BaseConverter(ABC):
                 logger.error(f"Error downloading image bytes {url}: {e}")
                 return None
 
-    def _optimize_image(self, img_bytes: bytes, content_type: str, max_dim: int = 1000, quality: int = 75) -> Optional[Tuple[bytes, str]]:
+    def _optimize_image(self, img_bytes: bytes, content_type: str, max_dim: int = 1200, quality: int = 78) -> Optional[Tuple[bytes, str]]:
         """
         Optimize downloaded image bytes using Pillow:
-        1. Resizes to max_dim (1000px) keeping aspect ratio.
-        2. Compresses JPEGs and other formats with quality=75.
-        3. Keeps PNG alpha transparency channel if present, otherwise converts to JPEG.
+        1. Resizes to max_dim (1200px) keeping aspect ratio.
+        2. Compresses JPEGs and other formats with quality=75-80%.
+        3. Keeps transparency channel by converting to WebP.
         4. Filters out tiny spacer/tracker images (size <= 16x16).
         """
         try:
             from PIL import Image
             
             img = Image.open(io.BytesIO(img_bytes))
-            orig_format = img.format
             
             # Filter out tiny spacer/tracker images (e.g. 16x16 or smaller)
             w, h = img.size
@@ -158,14 +160,14 @@ class BaseConverter(ABC):
                 has_transparency = True
                 
             if has_transparency:
-                # Save as PNG with optimization to keep transparency
-                img.save(out_io, format="PNG", optimize=True)
-                mime_type = "image/png"
+                # Save as WEBP to keep transparency with high compression
+                img.save(out_io, format="WEBP", quality=quality)
+                mime_type = "image/webp"
             else:
-                # Save as JPEG with quality compression
+                # Save as progressive JPEG with quality compression
                 if img.mode != "RGB":
                     img = img.convert("RGB")
-                img.save(out_io, format="JPEG", quality=quality, optimize=True)
+                img.save(out_io, format="JPEG", quality=quality, optimize=True, progressive=True)
                 mime_type = "image/jpeg"
                 
             optimized_bytes = out_io.getvalue()
@@ -443,6 +445,208 @@ def merge_split_paragraphs(soup: BeautifulSoup) -> None:
             next_sib.decompose()
 
 
+def fix_markdown_image_syntax(md: str) -> str:
+    r"""
+    Validates and repairs image links syntax in Markdown:
+    - Automatically closes unclosed parenthesis: ![alt](path -> ![alt](path)
+    - Normalizes backslashes to forward slashes: path\to\img -> path/to/img
+    """
+    pos = 0
+    while True:
+        idx = md.find("![", pos)
+        if idx == -1:
+            break
+        close_bracket = md.find("]", idx)
+        if close_bracket == -1:
+            pos = idx + 2
+            continue
+        if close_bracket + 1 < len(md) and md[close_bracket + 1] == "(":
+            next_newline = md.find("\n", close_bracket + 2)
+            if next_newline == -1:
+                next_newline = len(md)
+            next_img = md.find("![", close_bracket + 2)
+            if next_img == -1:
+                next_img = len(md)
+            limit = min(next_newline, next_img)
+            
+            close_paren = md.find(")", close_bracket + 2)
+            if close_paren == -1 or close_paren > limit:
+                path_end = limit
+                first_space = md.find(" ", close_bracket + 2)
+                if first_space != -1 and first_space < path_end:
+                    path_end = first_space
+                alt = md[idx+2:close_bracket].strip()
+                path = md[close_bracket+2:path_end].strip()
+                path = path.replace("\\", "/")
+                new_link = f"![{alt}]({path})"
+                md = md[:idx] + new_link + md[path_end:]
+                pos = idx + len(new_link)
+            else:
+                alt = md[idx+2:close_bracket].strip()
+                path = md[close_bracket+2:close_paren].strip()
+                path = path.replace("\\", "/")
+                new_link = f"![{alt}]({path})"
+                md = md[:idx] + new_link + md[close_paren+1:]
+                pos = idx + len(new_link)
+        else:
+            pos = close_bracket + 1
+    return md
+
+
+def convert_latex_to_mathml(latex_code: str, display: str = "inline") -> BeautifulSoup:
+    """Converts LaTeX formula string to namespaced MathML BeautifulSoup structure."""
+    try:
+        mathml_str = latex2mathml.converter.convert(latex_code)
+        math_soup = BeautifulSoup(mathml_str, "xml")
+        math_tag = math_soup.find("math")
+        if math_tag:
+            math_tag["display"] = display
+            math_tag["xmlns"] = "http://www.w3.org/1998/Math/MathML"
+        return math_soup
+    except Exception as e:
+        logger.error(f"Failed to convert LaTeX to MathML: {e}")
+        fallback = BeautifulSoup(f'<span class="math-fallback">{latex_code}</span>', "xml")
+        return fallback
+
+
+def convert_mathml_to_latex(mathml_tag) -> str:
+    """Converts MathML Tag back to LaTeX formula string."""
+    try:
+        mathml_str = str(mathml_tag)
+        latex = MathMLToLaTeX.convert(mathml_str)
+        return latex
+    except Exception as e:
+        logger.error(f"Failed to convert MathML to LaTeX: {e}")
+        return mathml_tag.get_text()
+
+
+def preprocess_formulas(soup: BeautifulSoup, to_markdown: bool = False) -> None:
+    """
+    Finds and normalizes math formulas (KaTeX, MathJax, MathML, raw TeX delimiters) in the HTML soup.
+    - If to_markdown: converts them into Markdown delimiters $...$ and $$...$$.
+    - If not to_markdown (EPUB): converts them into clean, namespaced MathML structures.
+    """
+    # 1. Convert KaTeX elements (usually <span class="katex"> or <div class="katex-display">)
+    for el in soup.find_all(class_=re.compile(r"\bkatex\b|\bkatex-display\b")):
+        if el.find_parent(class_=re.compile(r"\bkatex\b|\bkatex-display\b")):
+            continue
+            
+        is_display = "katex-display" in el.get("class", []) or el.name == "div"
+        parent_display = el.find_parent(class_=re.compile(r"display"))
+        if parent_display:
+            is_display = True
+            
+        ann = el.find("annotation", encoding="application/x-tex")
+        latex_code = ann.string.strip() if ann and ann.string else None
+        math_tag = el.find("math")
+        
+        if to_markdown:
+            if latex_code:
+                math_text = f" $${latex_code}$$ " if is_display else f" ${latex_code}$ "
+                el.replace_with(soup.new_string(math_text))
+            elif math_tag:
+                latex_from_mml = convert_mathml_to_latex(math_tag)
+                math_text = f" $${latex_from_mml}$$ " if is_display else f" ${latex_from_mml}$ "
+                el.replace_with(soup.new_string(math_text))
+            else:
+                el.decompose()
+        else:
+            if math_tag:
+                math_tag["xmlns"] = "http://www.w3.org/1998/Math/MathML"
+                math_tag["display"] = "block" if is_display else "inline"
+                extracted_math = math_tag.extract()
+                el.replace_with(extracted_math)
+            elif latex_code:
+                math_soup = convert_latex_to_mathml(latex_code, "block" if is_display else "inline")
+                new_math = math_soup.find("math")
+                if new_math:
+                    el.replace_with(new_math)
+                else:
+                    fallback_span = soup.new_tag("span", attrs={"class": "math-fallback"})
+                    fallback_span.string = f" $${latex_code}$$ " if is_display else f" ${latex_code}$ "
+                    el.replace_with(fallback_span)
+
+    # 2. Process MathJax script tags (<script type="math/tex">)
+    for script in soup.find_all("script", type=re.compile(r"^math/tex")):
+        latex_code = script.string.strip() if script.string else ""
+        is_display = "mode=display" in script.get("type", "")
+        
+        if to_markdown:
+            math_text = f" $${latex_code}$$ " if is_display else f" ${latex_code}$ "
+            script.replace_with(soup.new_string(math_text))
+        else:
+            math_soup = convert_latex_to_mathml(latex_code, "block" if is_display else "inline")
+            new_math = math_soup.find("math")
+            if new_math:
+                script.replace_with(new_math)
+            else:
+                script.decompose()
+
+    # 3. Process standalone <math> tags
+    for math_tag in soup.find_all("math"):
+        if math_tag.find_parent(class_=re.compile(r"\bkatex\b")):
+            continue
+            
+        is_display = math_tag.get("display") == "block"
+        
+        if to_markdown:
+            latex_code = convert_mathml_to_latex(math_tag)
+            math_text = f" $${latex_code}$$ " if is_display else f" ${latex_code}$ "
+            math_tag.replace_with(soup.new_string(math_text))
+        else:
+            math_tag["xmlns"] = "http://www.w3.org/1998/Math/MathML"
+            if is_display:
+                math_tag["display"] = "block"
+            else:
+                math_tag["display"] = "inline"
+
+    # 4. Process text nodes containing \( ... \), \[ ... \], $$ ... $$
+    for text_node in list(soup.find_all(string=True)):
+        parent = text_node.parent
+        if parent and parent.name in ("script", "style", "code", "pre", "math") or (parent and parent.get("class") and any("katex" in c for c in parent.get("class"))):
+            continue
+            
+        text_str = str(text_node)
+        if not text_str.strip():
+            continue
+            
+        pattern = re.compile(r'(\\\[.*?\\\]|\\\(.*?\\\)|\$\$.*?\$\$)')
+        parts = pattern.split(text_str)
+        if len(parts) > 1:
+            new_nodes = []
+            for part in parts:
+                if part.startswith(r'\['):
+                    latex = part[2:-2].strip()
+                    if to_markdown:
+                        new_nodes.append(soup.new_string(f" $${latex}$$ "))
+                    else:
+                        math_soup = convert_latex_to_mathml(latex, "block")
+                        new_math = math_soup.find("math")
+                        new_nodes.append(new_math if new_math else soup.new_string(part))
+                elif part.startswith(r'\('):
+                    latex = part[2:-2].strip()
+                    if to_markdown:
+                        new_nodes.append(soup.new_string(f" ${latex}$ "))
+                    else:
+                        math_soup = convert_latex_to_mathml(latex, "inline")
+                        new_math = math_soup.find("math")
+                        new_nodes.append(new_math if new_math else soup.new_string(part))
+                elif part.startswith('$$'):
+                    latex = part[2:-2].strip()
+                    if to_markdown:
+                        new_nodes.append(soup.new_string(f" $${latex}$$ "))
+                    else:
+                        math_soup = convert_latex_to_mathml(latex, "block")
+                        new_math = math_soup.find("math")
+                        new_nodes.append(new_math if new_math else soup.new_string(part))
+                else:
+                    new_nodes.append(soup.new_string(part))
+            
+            for node in new_nodes:
+                text_node.insert_before(node)
+            text_node.decompose()
+
+
 def preprocess_html(html: str) -> str:
     """Preprocess HTML to decompose useless elements, strip tracking, and unwrap meaningless tags."""
     soup = BeautifulSoup(html, "lxml")
@@ -453,6 +657,11 @@ def preprocess_html(html: str) -> str:
         useless_tags.append("img")
         
     for tag in soup.find_all(useless_tags):
+        # DO NOT decompose MathJax/KaTeX scripts
+        if tag.name == "script":
+            script_type = tag.get("type", "")
+            if script_type and ("math/tex" in script_type or "math/mml" in script_type):
+                continue
         tag.decompose()
         
     # 1.1 Strip cookie consent banners / CMP overlays (e.g. OneTrust, Didomi, Cookiebot, etc.)
@@ -827,6 +1036,8 @@ def clean_markdown(markdown_content: str) -> str:
     content = re.sub(r'\n{3,}', '\n\n', content)
     content = content.strip('\n')
     
+    content = fix_markdown_image_syntax(content)
+    
     return content + '\n'
 
 
@@ -844,7 +1055,12 @@ class MarkdownConverter(BaseConverter):
         # 0. Preprocess HTML
         html_content = preprocess_html(html_content)
         
-        # 1. Download images and rewrite URLs in HTML to reference IDs
+        # 0.5 Preprocess math formulas to standard Markdown delimiters
+        soup_formulas = BeautifulSoup(html_content, "lxml")
+        preprocess_formulas(soup_formulas, to_markdown=True)
+        html_content = str(soup_formulas)
+        
+        # 1. Download/resolve images and rewrite URLs in HTML to reference IDs
         logger.info(f"Embedding images as reference base64 for article: {article_slug}")
         html_with_refs, image_refs = await self._prepare_base64_references(html_content, base_url)
         
@@ -878,8 +1094,9 @@ class MarkdownConverter(BaseConverter):
 
     async def _prepare_base64_references(self, html_content: str, base_url: str) -> Tuple[str, Dict[str, str]]:
         """
-        Finds all image tags, downloads the images concurrently, and converts them to base64 URIs.
+        Finds all image tags, downloads/resolves the images concurrently, and converts them to base64 URIs.
         Replaces the img src in HTML with a reference ID (e.g. img_ref_1).
+        Supports web URLs, local file paths, and base64 URIs (which are decoded, optimized, and re-encoded).
         Returns the modified HTML and a dictionary mapping reference ID -> base64 URI.
         """
         soup = BeautifulSoup(html_content, "lxml")
@@ -902,18 +1119,80 @@ class MarkdownConverter(BaseConverter):
                 ref_id = f"img_ref_{idx}"
                 img["src"] = ref_id
                 
-                # Check for base64 encoded images
+                # A. Base64 encoded images
                 if src.startswith("data:image/"):
-                    image_refs[ref_id] = src
+                    try:
+                        pattern = re.compile(r'^data:image/(\w+);base64,(.*)$')
+                        match = pattern.match(src)
+                        if match:
+                            ext = match.group(1)
+                            img_bytes = base64.b64decode(match.group(2))
+                            mime = f"image/{ext}"
+                            
+                            # Optimize the decoded base64 image!
+                            optimized = self._optimize_image(img_bytes, mime, max_dim=1200, quality=75)
+                            if optimized:
+                                opt_bytes, opt_mime = optimized
+                                opt_b64 = base64.b64encode(opt_bytes).decode("utf-8")
+                                image_refs[ref_id] = f"data:{opt_mime};base64,{opt_b64}"
+                            else:
+                                image_refs[ref_id] = src
+                    except Exception as e:
+                        logger.error(f"Error parsing inline base64 image in MD: {e}")
+                        image_refs[ref_id] = src
                     continue
                 
-                # Resolve relative URLs
-                absolute_url = urljoin(base_url, src)
+                # B. Web URL or local file path
+                is_web_url = src.startswith(("http://", "https://")) or base_url.startswith(("http://", "https://"))
                 
-                # Download bytes using the shared helper
-                task = self._download_single_image_bytes(client, absolute_url, semaphore, base_url)
-                download_tasks.append(task)
-                img_rewrites.append((ref_id, task, absolute_url))
+                if is_web_url:
+                    # Resolve relative URLs
+                    absolute_url = urljoin(base_url, src)
+                    task = self._download_single_image_bytes(client, absolute_url, semaphore, base_url)
+                    download_tasks.append(task)
+                    img_rewrites.append((ref_id, task, absolute_url))
+                else:
+                    # It's a local file path
+                    try:
+                        if base_url.startswith("file://"):
+                            base_path = Path(urlparse(base_url).path)
+                        else:
+                            base_path = Path(base_url)
+                            
+                        if base_path.is_file():
+                            base_dir = base_path.parent
+                        else:
+                            base_dir = base_path
+                            
+                        if src.startswith("file://"):
+                            img_path = Path(urlparse(src).path)
+                        else:
+                            img_path = Path(src)
+                            
+                        if not img_path.is_absolute():
+                            img_path = (base_dir / img_path).resolve()
+                            
+                        if img_path.exists() and img_path.is_file():
+                            img_bytes = img_path.read_bytes()
+                            mime_type, _ = mimetypes.guess_type(str(img_path))
+                            if not mime_type:
+                                mime_type = "image/jpeg"
+                                
+                            # Optimize the local image!
+                            optimized = self._optimize_image(img_bytes, mime_type, max_dim=1200, quality=75)
+                            if optimized:
+                                opt_bytes, opt_mime = optimized
+                                opt_b64 = base64.b64encode(opt_bytes).decode("utf-8")
+                                image_refs[ref_id] = f"data:{opt_mime};base64,{opt_b64}"
+                            else:
+                                opt_b64 = base64.b64encode(img_bytes).decode("utf-8")
+                                image_refs[ref_id] = f"data:{mime_type};base64,{opt_b64}"
+                        else:
+                            logger.warning(f"Local image path does not exist for MD: {img_path}")
+                            image_refs[ref_id] = src
+                    except Exception as e:
+                        logger.error(f"Error loading local image {src} for MD: {e}")
+                        image_refs[ref_id] = src
             
             # Execute downloads concurrently
             if download_tasks:
@@ -1451,6 +1730,11 @@ class EPUBConverter(BaseConverter):
         # 1. Preprocess HTML
         html_content = preprocess_html(html_content)
         
+        # 1.5 Preprocess math formulas to namespaced MathML
+        soup_formulas = BeautifulSoup(html_content, "lxml")
+        preprocess_formulas(soup_formulas, to_markdown=False)
+        html_content = str(soup_formulas)
+        
         # 2. Extract and download all images, mapping them to local EPUB paths
         soup = BeautifulSoup(html_content, "lxml")
         img_tags = soup.find_all("img")
@@ -1467,9 +1751,8 @@ class EPUBConverter(BaseConverter):
                 if not src:
                     continue
                 
-                # Check for base64 encoded images
+                # A. Base64 encoded images
                 if src.startswith("data:image/"):
-                    # Decode base64 and add to images to pack
                     try:
                         pattern = re.compile(r'^data:image/(\w+);base64,(.*)$')
                         match = pattern.match(src)
@@ -1477,18 +1760,82 @@ class EPUBConverter(BaseConverter):
                             ext = match.group(1)
                             img_bytes = base64.b64decode(match.group(2))
                             mime = f"image/{ext}"
-                            epub_img_name = f"img_{idx}.{ext}"
-                            images_to_pack.append((f"OEBPS/images/{epub_img_name}", img_bytes, mime))
-                            img["src"] = f"images/{epub_img_name}"
+                            
+                            # Optimize the decoded base64 image!
+                            optimized = self._optimize_image(img_bytes, mime, max_dim=1200, quality=75)
+                            if optimized:
+                                opt_bytes, opt_mime = optimized
+                                opt_ext = self._get_extension_from_mime(opt_mime)
+                                if not opt_ext:
+                                    opt_ext = f".{ext}"
+                                epub_img_name = f"img_{idx}{opt_ext}"
+                                images_to_pack.append((f"OEBPS/images/{epub_img_name}", opt_bytes, opt_mime))
+                                img["src"] = f"images/{epub_img_name}"
+                            else:
+                                epub_img_name = f"img_{idx}.{ext}"
+                                images_to_pack.append((f"OEBPS/images/{epub_img_name}", img_bytes, mime))
+                                img["src"] = f"images/{epub_img_name}"
                     except Exception as e:
-                        logger.error(f"Error parsing inline base64 image: {e}")
+                        logger.error(f"Error parsing inline base64 image in EPUB: {e}")
                     continue
                 
-                absolute_url = urljoin(base_url, src)
-                task = self._download_single_image_bytes(client, absolute_url, semaphore, base_url)
-                download_tasks.append(task)
-                img_rewrites.append((img, idx, task, absolute_url))
+                # B. Web URL or local file path
+                is_web_url = src.startswith(("http://", "https://")) or base_url.startswith(("http://", "https://"))
                 
+                if is_web_url:
+                    # Resolve relative URLs
+                    absolute_url = urljoin(base_url, src)
+                    task = self._download_single_image_bytes(client, absolute_url, semaphore, base_url)
+                    download_tasks.append(task)
+                    img_rewrites.append((img, idx, task, absolute_url))
+                else:
+                    # It's a local file path
+                    try:
+                        if base_url.startswith("file://"):
+                            base_path = Path(urlparse(base_url).path)
+                        else:
+                            base_path = Path(base_url)
+                            
+                        if base_path.is_file():
+                            base_dir = base_path.parent
+                        else:
+                            base_dir = base_path
+                            
+                        if src.startswith("file://"):
+                            img_path = Path(urlparse(src).path)
+                        else:
+                            img_path = Path(src)
+                            
+                        if not img_path.is_absolute():
+                            img_path = (base_dir / img_path).resolve()
+                            
+                        if img_path.exists() and img_path.is_file():
+                            img_bytes = img_path.read_bytes()
+                            mime_type, _ = mimetypes.guess_type(str(img_path))
+                            if not mime_type:
+                                mime_type = "image/jpeg"
+                                
+                            # Optimize the local image!
+                            optimized = self._optimize_image(img_bytes, mime_type, max_dim=1200, quality=75)
+                            if optimized:
+                                opt_bytes, opt_mime = optimized
+                                opt_ext = self._get_extension_from_mime(opt_mime)
+                                if not opt_ext:
+                                    opt_ext = img_path.suffix
+                                epub_img_name = f"img_{idx}{opt_ext}"
+                                images_to_pack.append((f"OEBPS/images/{epub_img_name}", opt_bytes, opt_mime))
+                                img["src"] = f"images/{epub_img_name}"
+                            else:
+                                # Use original
+                                epub_img_name = f"img_{idx}{img_path.suffix}"
+                                images_to_pack.append((f"OEBPS/images/{epub_img_name}", img_bytes, mime_type))
+                                img["src"] = f"images/{epub_img_name}"
+                        else:
+                            logger.warning(f"Local image path does not exist for EPUB: {img_path}")
+                    except Exception as e:
+                        logger.error(f"Error loading local image {src} for EPUB: {e}")
+            
+            # Execute downloads concurrently
             if download_tasks:
                 results = await asyncio.gather(*download_tasks, return_exceptions=True)
                 for img, idx, task, absolute_url in img_rewrites:
@@ -1497,8 +1844,6 @@ class EPUBConverter(BaseConverter):
                     
                     if isinstance(result, Exception) or not result:
                         logger.warning(f"Failed to download image for EPUB {absolute_url}: {result}")
-                        # Fallback to the absolute URL in EPUB
-                        img["src"] = absolute_url
                     else:
                         img_bytes, mime_type = result
                         ext = self._get_extension_from_mime(mime_type)
