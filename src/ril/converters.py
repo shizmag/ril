@@ -46,7 +46,9 @@ class BaseConverter(ABC):
         client: httpx.AsyncClient,
         url: str,
         semaphore: asyncio.Semaphore,
-        referer: Optional[str] = None
+        referer: Optional[str] = None,
+        role: Optional[str] = None,
+        preserve_text_quality: bool = False
     ) -> Optional[Tuple[bytes, str]]:
         """
         Download a single image and return its bytes and content-type.
@@ -63,7 +65,7 @@ class BaseConverter(ABC):
                     "User-Agent": (
                         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
                         "AppleWebKit/537.36 (KHTML, like Gecko) "
-                        "Chrome/122.0.0.0 Safari/537.36 (ReadItLaterBot/1.0; contact: support@readitlater-app.local)"
+                        "Chrome/122.0.0.0 Safari/537.36"
                     ),
                     "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
                     "Accept-Language": "en-US,en;q=0.9,ru;q=0.8",
@@ -111,7 +113,12 @@ class BaseConverter(ABC):
                     return response.content, content_type
                 
                 # Optimize image bytes using Pillow
-                res = self._optimize_image(response.content, content_type)
+                res = self._optimize_image(
+                    response.content,
+                    content_type,
+                    role=role,
+                    preserve_text_quality=preserve_text_quality
+                )
                 if not res:
                     return None
                 return res
@@ -119,7 +126,15 @@ class BaseConverter(ABC):
                 logger.error(f"Error downloading image bytes {url}: {e}")
                 return None
 
-    def _optimize_image(self, img_bytes: bytes, content_type: str, max_dim: int = 1200, quality: int = 78) -> Optional[Tuple[bytes, str]]:
+    def _optimize_image(
+        self,
+        img_bytes: bytes,
+        content_type: str,
+        max_dim: int = 1200,
+        quality: int = 78,
+        role: Optional[str] = None,
+        preserve_text_quality: bool = False
+    ) -> Optional[Tuple[bytes, str]]:
         """
         Optimize downloaded image bytes using Pillow:
         1. Resizes to max_dim (1200px) keeping aspect ratio.
@@ -137,6 +152,15 @@ class BaseConverter(ABC):
             if w <= 16 and h <= 16:
                 logger.info(f"Skipping tiny/tracker image with dimensions {w}x{h}")
                 return None
+                
+            is_high_quality_role = (
+                role in {"formula", "math", "chart", "diagram", "table", "screenshot"}
+                or preserve_text_quality
+            )
+            
+            # For formula/math/chart/diagram/table, don't downscale below 1000px
+            if is_high_quality_role:
+                max_dim = max(max_dim, 1000)
                 
             # 1. Resize if needed
             if w > max_dim or h > max_dim:
@@ -159,16 +183,26 @@ class BaseConverter(ABC):
             elif img.mode == "P" and "transparency" in img.info:
                 has_transparency = True
                 
-            if has_transparency:
-                # Save as WEBP to keep transparency with high compression
-                img.save(out_io, format="WEBP", quality=quality)
-                mime_type = "image/webp"
+            if is_high_quality_role:
+                # Do not convert to JPEG for diagrams/charts/formulas
+                # Keep original format if it was png/webp/gif, or default to PNG.
+                if "webp" in content_type.lower() or has_transparency:
+                    img.save(out_io, format="WEBP", quality=90)
+                    mime_type = "image/webp"
+                else:
+                    img.save(out_io, format="PNG")
+                    mime_type = "image/png"
             else:
-                # Save as progressive JPEG with quality compression
-                if img.mode != "RGB":
-                    img = img.convert("RGB")
-                img.save(out_io, format="JPEG", quality=quality, optimize=True, progressive=True)
-                mime_type = "image/jpeg"
+                if has_transparency:
+                    # Save as WEBP to keep transparency with high compression
+                    img.save(out_io, format="WEBP", quality=quality)
+                    mime_type = "image/webp"
+                else:
+                    # Save as progressive JPEG with quality compression
+                    if img.mode != "RGB":
+                        img = img.convert("RGB")
+                    img.save(out_io, format="JPEG", quality=quality, optimize=True, progressive=True)
+                    mime_type = "image/jpeg"
                 
             optimized_bytes = out_io.getvalue()
             
@@ -708,6 +742,74 @@ def is_formula_img(img) -> bool:
     return False
 
 
+def infer_image_role_from_tag(img) -> str:
+    """
+    Infers the role of the image from its class, id, src, or alt attributes.
+    """
+    classes = img.get("class", [])
+    if isinstance(classes, list):
+        classes = " ".join(classes)
+    elif not isinstance(classes, str):
+        classes = str(classes)
+        
+    img_id = str(img.get("id", ""))
+    src = str(img.get("src", ""))
+    if src.startswith("data:"):
+        src = src.split(",", 1)[0]
+    alt = str(img.get("alt", ""))
+    
+    combined = (classes + " " + img_id + " " + src + " " + alt).lower()
+    
+    if any(k in combined for k in ["formula", "math", "tex", "katex", "equation"]):
+        return "formula"
+    if any(k in combined for k in ["chart", "plot", "graph", "diagram", "figure"]):
+        return "chart"
+    if "table" in combined:
+        return "table"
+    if "screenshot" in combined:
+        return "screenshot"
+    return "photo"
+
+
+def remove_or_preserve_svg(soup: BeautifulSoup) -> None:
+    """
+    Remove only decorative tiny icon SVGs, keep meaningful SVGs.
+    """
+    for svg in soup.find_all("svg"):
+        is_decorative = False
+        
+        width_val = svg.get("width")
+        height_val = svg.get("height")
+        try:
+            w = int(float(width_val)) if width_val else None
+            h = int(float(height_val)) if height_val else None
+            if w is not None and h is not None and w <= 24 and h <= 24:
+                is_decorative = True
+        except ValueError:
+            pass
+            
+        if svg.get("aria-hidden") == "true":
+            is_decorative = True
+            
+        role = svg.get("role")
+        has_text = bool(svg.get_text(strip=True))
+        has_title = bool(svg.find("title"))
+        has_desc = bool(svg.find("desc"))
+        
+        classes = svg.get("class", [])
+        if isinstance(classes, list):
+            classes = " ".join(classes)
+        elif not isinstance(classes, str):
+            classes = str(classes)
+        classes_lower = classes.lower()
+        
+        is_icon_class = any(k in classes_lower for k in ["icon", "logo", "social"])
+        
+        if is_decorative or (role != "img" and not has_text and not has_title and not has_desc and (is_icon_class or svg.get("aria-hidden") == "true")):
+            svg.decompose()
+
+
+
 def validate_and_normalize_math(md_content: str) -> str:
     """
     Validate and normalize mathematical formulas to be standard Pandoc markdown compliant.
@@ -723,7 +825,7 @@ def preprocess_html(html: str) -> str:
     soup = BeautifulSoup(html, "lxml")
     
     # 1. Strip useless tags completely
-    useless_tags = ["script", "style", "meta", "noscript", "svg"]
+    useless_tags = ["script", "style", "meta", "noscript"]
     if config.DISABLE_IMAGES:
         useless_tags.append("img")
         
@@ -738,6 +840,10 @@ def preprocess_html(html: str) -> str:
             if is_formula_img(tag):
                 continue
         tag.decompose()
+        
+    # Preserve meaningful SVGs, remove decorative ones
+    remove_or_preserve_svg(soup)
+
         
     # 1.1 Strip cookie consent banners / CMP overlays (e.g. OneTrust, Didomi, Cookiebot, etc.)
     consent_selectors = [
@@ -1197,18 +1303,22 @@ class MarkdownConverter(BaseConverter):
                 ref_id = f"img_ref_{idx}"
                 img["src"] = ref_id
                 
+                # Infer image role
+                role = infer_image_role_from_tag(img)
+                
                 # A. Base64 encoded images
                 if src.startswith("data:image/"):
                     try:
-                        pattern = re.compile(r'^data:image/(\w+);base64,(.*)$')
-                        match = pattern.match(src)
+                        src_clean = re.sub(r'\s+', '', src)
+                        pattern = re.compile(r'^data:image/([^;]+);base64,(.*)$')
+                        match = pattern.match(src_clean)
                         if match:
                             ext = match.group(1)
                             img_bytes = base64.b64decode(match.group(2))
                             mime = f"image/{ext}"
                             
                             # Optimize the decoded base64 image!
-                            optimized = self._optimize_image(img_bytes, mime, max_dim=1200, quality=75)
+                            optimized = self._optimize_image(img_bytes, mime, max_dim=1200, quality=75, role=role)
                             if optimized:
                                 opt_bytes, opt_mime = optimized
                                 opt_b64 = base64.b64encode(opt_bytes).decode("utf-8")
@@ -1226,7 +1336,7 @@ class MarkdownConverter(BaseConverter):
                 if is_web_url:
                     # Resolve relative URLs
                     absolute_url = urljoin(base_url, src)
-                    task = self._download_single_image_bytes(client, absolute_url, semaphore, base_url)
+                    task = self._download_single_image_bytes(client, absolute_url, semaphore, base_url, role=role)
                     download_tasks.append(task)
                     img_rewrites.append((ref_id, task, absolute_url))
                 else:
@@ -1257,7 +1367,7 @@ class MarkdownConverter(BaseConverter):
                                 mime_type = "image/jpeg"
                                 
                             # Optimize the local image!
-                            optimized = self._optimize_image(img_bytes, mime_type, max_dim=1200, quality=75)
+                            optimized = self._optimize_image(img_bytes, mime_type, max_dim=1200, quality=75, role=role)
                             if optimized:
                                 opt_bytes, opt_mime = optimized
                                 opt_b64 = base64.b64encode(opt_bytes).decode("utf-8")
@@ -1398,8 +1508,9 @@ class HTMLConverter(BaseConverter):
                     img["src"] = src
                     continue
 
+                role = infer_image_role_from_tag(img)
                 absolute_url = urljoin(base_url, src)
-                task = self._download_single_image_bytes(client, absolute_url, semaphore, base_url)
+                task = self._download_single_image_bytes(client, absolute_url, semaphore, base_url, role=role)
                 download_tasks.append(task)
                 img_rewrites.append((img, task, absolute_url))
 
@@ -1869,18 +1980,22 @@ class EPUBConverter(BaseConverter):
                 if not src:
                     continue
                 
+                # Infer image role
+                role = infer_image_role_from_tag(img)
+                
                 # A. Base64 encoded images
                 if src.startswith("data:image/"):
                     try:
-                        pattern = re.compile(r'^data:image/(\w+);base64,(.*)$')
-                        match = pattern.match(src)
+                        src_clean = re.sub(r'\s+', '', src)
+                        pattern = re.compile(r'^data:image/([^;]+);base64,(.*)$')
+                        match = pattern.match(src_clean)
                         if match:
                             ext = match.group(1)
                             img_bytes = base64.b64decode(match.group(2))
                             mime = f"image/{ext}"
                             
                             # Optimize the decoded base64 image!
-                            optimized = self._optimize_image(img_bytes, mime, max_dim=1200, quality=75)
+                            optimized = self._optimize_image(img_bytes, mime, max_dim=1200, quality=75, role=role)
                             if optimized:
                                 opt_bytes, opt_mime = optimized
                                 opt_ext = self._get_extension_from_mime(opt_mime)
@@ -1903,7 +2018,7 @@ class EPUBConverter(BaseConverter):
                 if is_web_url:
                     # Resolve relative URLs
                     absolute_url = urljoin(base_url, src)
-                    task = self._download_single_image_bytes(client, absolute_url, semaphore, base_url)
+                    task = self._download_single_image_bytes(client, absolute_url, semaphore, base_url, role=role)
                     download_tasks.append(task)
                     img_rewrites.append((img, idx, task, absolute_url))
                 else:
@@ -1934,7 +2049,7 @@ class EPUBConverter(BaseConverter):
                                 mime_type = "image/jpeg"
                                 
                             # Optimize the local image!
-                            optimized = self._optimize_image(img_bytes, mime_type, max_dim=1200, quality=75)
+                            optimized = self._optimize_image(img_bytes, mime_type, max_dim=1200, quality=75, role=role)
                             if optimized:
                                 opt_bytes, opt_mime = optimized
                                 opt_ext = self._get_extension_from_mime(opt_mime)

@@ -107,7 +107,7 @@ async def test_process_url_pipeline(mocker, setup_test_environment):
     assert os.path.exists(file_path)
     with open(file_path, "r", encoding="utf-8") as f:
         content = f.read()
-        assert "# Квантовые процессоры" in content
+        assert "Квантовые процессоры Текст статьи" in content
         
     # Check that it's in the database
     db_article = db.get_article(result["id"])
@@ -327,7 +327,7 @@ async def test_process_url_routing_logic(mocker, setup_test_environment):
     web_url = "https://example.com/math-page"
     web_result = await core.process_url(web_url, converter=MarkdownConverter())
     assert web_result["title"] == "Web Page Title"
-    assert mock_marker.called
+    assert not mock_marker.called
     
     # Reset mocks
     mock_marker.reset_mock()

@@ -217,7 +217,7 @@ class TestMdToHtmlFallback:
     def test_basic_conversion(self):
         md = "# Hello\n\nParagraph text."
         result = md_to_html_fallback(md, "Hello")
-        assert "<h1>" in result
+        assert "<h1" in result
         assert "Paragraph text." in result
 
     def test_title_in_head(self):

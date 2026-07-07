@@ -16,6 +16,9 @@ logger = logging.getLogger(__name__)
 # Initialize DB on load
 db.init_db()
 
+EXPORT_PIPELINE_VERSION = "2026-07-quickfix-1"
+
+
 def sanitize_filename(title: str) -> str:
     """
     Sanitize the article title to create a clean, filesystem-safe filename.
@@ -135,9 +138,23 @@ async def process_url(
     
     url_lower = url.lower()
     is_pdf = url_lower.split('?')[0].endswith('.pdf') or '/pdf/' in url_lower
+    
+    if not is_pdf and url.startswith(("http://", "https://")):
+        try:
+            import httpx
+            with httpx.Client(follow_redirects=True, timeout=2.0) as client:
+                resp = client.head(url)
+                if resp.status_code == 200:
+                    content_type = resp.headers.get("content-type", "").lower()
+                    if "application/pdf" in content_type:
+                        is_pdf = True
+        except Exception as e:
+            logger.debug(f"HEAD request failed for {url}: {e}")
+
     temp_pdf_path = None
     readability_title = None
     clean_html = None
+    html = None
     
     if is_pdf:
         try:
@@ -147,9 +164,9 @@ async def process_url(
             raise e
     else:
         try:
-            html = await fetch_html(url, rasterize_svg=True)
+            html = await fetch_html(url, rasterize_svg=rasterize_svg)
         except Exception as e:
-            if "Download is starting" in str(e):
+            if "Download is starting" in str(e) or "download" in str(e).lower():
                 is_pdf = True
                 try:
                     temp_pdf_path = download_pdf(url)
@@ -157,200 +174,6 @@ async def process_url(
                     logger.error(f"Failed to download PDF after Playwright download trigger: {e2}")
                     raise e2
             else:
-                raise e
-
-        # If it's a web page and not a PDF download trigger, render to PDF
-        if not is_pdf:
-            try:
-                # 2. Extract title & clean HTML
-                readability_title, clean_html = extract_article(html)
-                
-                # 3. Reconstruct beautifully styled HTML document
-                styled_html = f"""<!DOCTYPE html>
-<html>
-<head>
-<meta charset="utf-8">
-<title>{readability_title or 'Article'}</title>
-<style>
-  body {{
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-    line-height: 1.6;
-    color: #1a1a1a;
-    max-width: 800px;
-    margin: 40px auto;
-    padding: 0 20px;
-    background-color: #ffffff;
-  }}
-  h1 {{
-    font-size: 2.2em;
-    margin-bottom: 0.5em;
-    color: #111111;
-  }}
-  img {{
-    max-width: 100%;
-    height: auto;
-    display: block;
-    margin: 1.5em auto;
-  }}
-  svg, canvas {{
-    max-width: 100%;
-  }}
-  pre, code {{
-    background-color: #f4f4f4;
-    padding: 2px 5px;
-    border-radius: 3px;
-    font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
-    font-size: 0.9em;
-  }}
-  pre {{
-    padding: 1em;
-    overflow-x: auto;
-  }}
-  blockquote {{
-    border-left: 4px solid #ccc;
-    margin: 0;
-    padding-left: 1em;
-    color: #666;
-  }}
-  table {{
-    border-collapse: collapse;
-    width: 100%;
-    margin: 1.5em 0;
-  }}
-  th, td {{
-    border: 1px solid #ddd;
-    padding: 8px;
-    text-align: left;
-  }}
-  th {{
-    background-color: #f2f2f2;
-  }}
-</style>
-</head>
-<body>
-  <h1>{readability_title or ''}</h1>
-  {clean_html}
-</body>
-</html>"""
-                
-                import uuid
-                from playwright.async_api import async_playwright
-                
-                temp_dir = Path("./temp")
-                temp_dir.mkdir(exist_ok=True)
-                temp_pdf_path = temp_dir / f"{uuid.uuid4()}.pdf"
-                
-                # 4. Inline Playwright and advanced chart rasterization
-                async with async_playwright() as p:
-                    browser = await p.chromium.launch(headless=True)
-                    page = await browser.new_page()
-                    await page.set_content(styled_html, wait_until="load")
-                    
-                    rasterize_script = """
-                    async () => {
-                        const sleep = ms => new Promise(r => r(ms));
-                        await sleep(500);
-
-                        const svgToPng = async (svgEl) => {
-                            const rect = svgEl.getBoundingClientRect();
-                            const width = rect.width || parseFloat(svgEl.getAttribute('width')) || svgEl.clientWidth || 300;
-                            const height = rect.height || parseFloat(svgEl.getAttribute('height')) || svgEl.clientHeight || 150;
-                            
-                            const serializer = new XMLSerializer();
-                            let svgString = serializer.serializeToString(svgEl);
-                            if (!svgString.match(/^<svg[^>]+xmlns="http:\\/\\/www\\.w3\\.org\\/2000\\/svg"/)) {
-                                svgString = svgString.replace(/^<svg/, '<svg xmlns="http://www.w3.org/2000/svg"');
-                            }
-                            
-                            const img = new Image();
-                            const blob = new Blob([svgString], {type: 'image/svg+xml;charset=utf-8'});
-                            const url = URL.createObjectURL(blob);
-                            
-                            try {
-                                await new Promise((resolve, reject) => {
-                                    img.onload = resolve;
-                                    img.onerror = reject;
-                                    img.src = url;
-                                    setTimeout(reject, 1000);
-                                });
-                                
-                                const canvas = document.createElement('canvas');
-                                canvas.width = width * 2 || 600;
-                                canvas.height = height * 2 || 300;
-                                const ctx = canvas.getContext('2d');
-                                ctx.fillStyle = 'transparent';
-                                ctx.fillRect(0, 0, canvas.width, canvas.height);
-                                ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-                                
-                                return { dataUrl: canvas.toDataURL('image/png'), width, height };
-                            } finally {
-                                URL.revokeObjectURL(url);
-                            }
-                        };
-
-                        const canvasToPng = (canvasEl) => {
-                            const rect = canvasEl.getBoundingClientRect();
-                            const width = rect.width || canvasEl.clientWidth || 300;
-                            const height = rect.height || canvasEl.clientHeight || 150;
-                            return { dataUrl: canvasEl.toDataURL('image/png'), width, height };
-                        };
-
-                        const svgs = Array.from(document.querySelectorAll('svg'));
-                        for (const svg of svgs) {
-                            try {
-                                const { dataUrl, width, height } = await svgToPng(svg);
-                                const img = document.createElement('img');
-                                img.src = dataUrl;
-                                img.style.width = width + 'px';
-                                img.style.height = height + 'px';
-                                img.style.display = 'block';
-                                img.style.margin = '10px auto';
-                                img.style.maxWidth = '100%';
-                                img.style.height = 'auto';
-                                svg.parentNode.replaceChild(img, svg);
-                            } catch (e) {
-                                console.error('Error rasterizing SVG:', e);
-                            }
-                        }
-
-                        const canvases = Array.from(document.querySelectorAll('canvas'));
-                        for (const canvas of canvases) {
-                            try {
-                                const { dataUrl, width, height } = canvasToPng(canvas);
-                                const img = document.createElement('img');
-                                img.src = dataUrl;
-                                img.style.width = width + 'px';
-                                img.style.height = height + 'px';
-                                img.style.display = 'block';
-                                img.style.margin = '10px auto';
-                                img.style.maxWidth = '100%';
-                                img.style.height = 'auto';
-                                canvas.parentNode.replaceChild(img, canvas);
-                            } catch (e) {
-                                console.error('Error rasterizing canvas:', e);
-                            }
-                        }
-                    }
-                    """
-                    await page.evaluate(rasterize_script)
-                    
-                    # 5. Print unpaginated PDF
-                    await page.evaluate("document.body.style.height = 'auto'")
-                    scroll_height = await page.evaluate("Math.max(document.body.scrollHeight, document.documentElement.scrollHeight, 800)")
-                    
-                    await page.pdf(
-                        path=str(temp_pdf_path),
-                        width="800px",
-                        height=f"{scroll_height + 100}px",
-                        print_background=True,
-                        margin={"top": "0px", "bottom": "0px", "left": "0px", "right": "0px"}
-                    )
-                    await browser.close()
-                
-                # 6. Flip is_pdf = True
-                is_pdf = True
-            except Exception as e:
-                logger.error(f"Failed to generate unpaginated PDF from HTML: {e}")
                 raise e
 
     if is_pdf:
@@ -572,13 +395,19 @@ def delete_article(article_id: int) -> bool:
     if not deleted:
         return False
         
-    # 3. Delete markdown file
+    # 3. Delete files (main file, exports, and meta files)
     try:
         if file_path.exists():
             file_path.unlink()
             logger.info(f"Deleted file: {file_path}")
+            
+        for ext in [".epub", ".html", ".md", ".epub.meta.json", ".html.meta.json", ".md.meta.json", ".html_clean"]:
+            sibling = file_path.with_suffix(ext)
+            if sibling.exists():
+                sibling.unlink()
+                logger.info(f"Deleted export/meta file: {sibling}")
     except Exception as e:
-        logger.error(f"Error deleting markdown file {file_path}: {e}")
+        logger.error(f"Error deleting files for article {file_path}: {e}")
         
     # 4. Delete images folder
     # The image directory name is the slug of the file, which is file_path.stem
@@ -592,6 +421,7 @@ def delete_article(article_id: int) -> bool:
         logger.error(f"Error deleting image folder {img_dir}: {e}")
         
     return True
+
 
 def reset_library() -> None:
     """Clear all database tables and remove all markdown files/images in the library."""
@@ -641,58 +471,70 @@ def reset_library() -> None:
         logger.error(f"Error resetting files: {e}")
 
 def md_to_html_fallback(md_content: str, title: str) -> str:
-    lines = md_content.split('\n')
-    html_lines = []
-    in_code = False
-    in_list = False
-    for line in lines:
-        line_strip = line.strip()
-        if line_strip.startswith('```'):
-            if in_code:
-                html_lines.append('</pre>')
-                in_code = False
-            else:
-                html_lines.append('<pre><code>')
-                in_code = True
-            continue
-            
-        if in_code:
-            html_lines.append(line)
-            continue
-            
-        if line_strip.startswith('#'):
-            level = len(line) - len(line.lstrip('#'))
-            header_text = line.lstrip('#').strip()
-            html_lines.append(f'<h{level}>{header_text}</h{level}>')
-            continue
-            
-        if line_strip.startswith('* ') or line_strip.startswith('- '):
-            if not in_list:
-                html_lines.append('<ul>')
-                in_list = True
-            html_lines.append(f'<li>{line_strip[2:]}</li>')
-            continue
-        else:
-            if in_list:
-                html_lines.append('</ul>')
-                in_list = False
-                
-        if line_strip == '':
-            html_lines.append('<br/>')
-        else:
-            html_lines.append(f'<p>{line_strip}</p>')
-            
-    if in_list:
-        html_lines.append('</ul>')
-    if in_code:
-        html_lines.append('</pre>')
-        
-    body = '\n'.join(html_lines)
+    """
+    Fallback markdown to HTML parser using python-markdown.
+    """
+    import re
+    import markdown
     import html as _html
-    safe_title = _html.escape(title)
-    return f"<html><head><title>{safe_title}</title></head><body>{body}</body></html>"
 
-async def export_article(article_id: int, export_format: str) -> Dict[str, Any]:
+    if not md_content:
+        md_content = ""
+
+    placeholders = {}
+    placeholder_count = 0
+
+    def repl_block_bracket(match):
+        nonlocal placeholder_count
+        ph = f"MATHBLOCKPLACEHOLDER{placeholder_count}"
+        placeholder_count += 1
+        placeholders[ph] = match.group(0)
+        return ph
+
+    def repl_block_double_dollar(match):
+        nonlocal placeholder_count
+        ph = f"MATHBLOCKPLACEHOLDER{placeholder_count}"
+        placeholder_count += 1
+        placeholders[ph] = match.group(0)
+        return ph
+
+    def repl_inline_paren(match):
+        nonlocal placeholder_count
+        ph = f"MATHINLINEPLACEHOLDER{placeholder_count}"
+        placeholder_count += 1
+        placeholders[ph] = match.group(0)
+        return ph
+
+    def repl_inline_dollar(match):
+        nonlocal placeholder_count
+        ph = f"MATHINLINEPLACEHOLDER{placeholder_count}"
+        placeholder_count += 1
+        placeholders[ph] = match.group(0)
+        return ph
+
+    content = md_content
+    # Replace math delimiters to avoid markdown formatting issues inside equations
+    content = re.sub(r'\\\[(.*?)\\\]', repl_block_bracket, content, flags=re.DOTALL)
+    content = re.sub(r'\$\$(.*?)\$\$', repl_block_double_dollar, content, flags=re.DOTALL)
+    content = re.sub(r'\\\((.*?)\\\)', repl_inline_paren, content, flags=re.DOTALL)
+    content = re.sub(r'\$([^\$\s](?:[^\$]*?[^\$\s])?)\$', repl_inline_dollar, content)
+
+    html_out = markdown.markdown(
+        content,
+        extensions=[
+            "extra",
+            "sane_lists",
+            "toc",
+        ]
+    )
+
+    for ph, orig in placeholders.items():
+        html_out = html_out.replace(ph, orig)
+
+    safe_title = _html.escape(title)
+    return f"<html><head><title>{safe_title}</title></head><body>{html_out}</body></html>"
+
+async def export_article(article_id: int, export_format: str, force: bool = False) -> Dict[str, Any]:
     article = db.get_article(article_id)
     if not article:
         raise ValueError(f"Article with ID {article_id} not found")
@@ -700,9 +542,22 @@ async def export_article(article_id: int, export_format: str) -> Dict[str, Any]:
     original_file_path = Path(article["file_path"])
     target_ext = f".{export_format.lower()}"
     target_file_path = original_file_path.with_suffix(target_ext)
+    meta_file_path = target_file_path.with_suffix(target_file_path.suffix + ".meta.json")
     
-    # If the file already exists, we reuse it (cache)
-    if target_file_path.exists():
+    import json
+    # Check if target file and meta file both exist and version matches
+    cache_valid = False
+    if target_file_path.exists() and meta_file_path.exists():
+        try:
+            with open(meta_file_path, "r", encoding="utf-8") as mf:
+                meta_data = json.load(mf)
+                if meta_data.get("export_pipeline_version") == EXPORT_PIPELINE_VERSION:
+                    cache_valid = True
+        except Exception as e:
+            logger.debug(f"Failed to read/parse meta file {meta_file_path}: {e}")
+
+    # If the file already exists and cache is valid, we reuse it (cache)
+    if not force and cache_valid:
         return {
             "article_id": article_id,
             "title": article["title"],
@@ -715,7 +570,7 @@ async def export_article(article_id: int, export_format: str) -> Dict[str, Any]:
             "tags": article["tags"]
         }
         
-    # If not exists, generate it
+    # If not valid/forced, generate it
     clean_html_path = original_file_path.with_suffix('.html_clean')
     
     html_content = ""
@@ -774,6 +629,13 @@ async def export_article(article_id: int, export_format: str) -> Dict[str, Any]:
             f.write(content)
     else:
         raise ValueError(f"Unsupported export format: {export_format}")
+        
+    # Write meta file
+    try:
+        with open(meta_file_path, "w", encoding="utf-8") as mf:
+            json.dump({"export_pipeline_version": EXPORT_PIPELINE_VERSION}, mf)
+    except Exception as e:
+        logger.error(f"Failed to save meta file {meta_file_path}: {e}")
         
     return {
         "article_id": article_id,
