@@ -21,7 +21,7 @@ from ril import db, config
 
 def _fake_convert(path, markdown="# Fake Title\n\nBody text.", title="Fake Title", images=None):
     """Factory returning a fake convert_pdf_with_marker that also asserts on the path."""
-    def _impl(pdf_path):
+    def _impl(pdf_path, *args, **kwargs):
         assert pdf_path == path, f"Expected path {path}, got {pdf_path}"
         return (markdown, title, images or {})
     return _impl
@@ -155,7 +155,7 @@ async def test_process_pdf_strips_images_when_disabled(monkeypatch, setup_test_e
     monkeypatch.setattr(
         core,
         "convert_pdf_with_marker",
-        lambda p: (md_with_image, "Title", images),
+        lambda p, *a, **kw: (md_with_image, "Title", images),
     )
     monkeypatch.setattr(config, "DISABLE_IMAGES", True)
 
@@ -186,7 +186,7 @@ async def test_process_pdf_embeds_images_when_enabled(monkeypatch, setup_test_en
     monkeypatch.setattr(
         core,
         "convert_pdf_with_marker",
-        lambda p: (md_with_image, "Title", images),
+        lambda p, *a, **kw: (md_with_image, "Title", images),
     )
     monkeypatch.setattr(config, "DISABLE_IMAGES", False)
 
@@ -209,7 +209,7 @@ async def test_process_pdf_cleanup_on_success(monkeypatch, setup_test_environmen
     monkeypatch.setattr(
         core,
         "convert_pdf_with_marker",
-        lambda p: ("# Title\n\nBody.", "Title", {}),
+        lambda p, *a, **kw: ("# Title\n\nBody.", "Title", {}),
     )
 
     assert fake_pdf.exists()
@@ -229,7 +229,7 @@ async def test_process_pdf_cleanup_on_marker_error(monkeypatch, setup_test_envir
 
     monkeypatch.setattr(core, "download_pdf", lambda url: fake_pdf)
 
-    def _raise(p):
+    def _raise(p, *a, **kw):
         raise RuntimeError("marker exploded")
 
     monkeypatch.setattr(core, "convert_pdf_with_marker", _raise)
@@ -259,7 +259,7 @@ async def test_process_pdf_duplicate_url_without_force(monkeypatch, setup_test_e
     monkeypatch.setattr(
         core,
         "convert_pdf_with_marker",
-        lambda p: ("# Doc\n\nBody.", "Doc", {}),
+        lambda p, *a, **kw: ("# Doc\n\nBody.", "Doc", {}),
     )
 
     url = "https://example.com/dup.pdf"
@@ -284,7 +284,7 @@ async def test_process_pdf_force_updates_existing(monkeypatch, setup_test_enviro
     monkeypatch.setattr(
         core,
         "convert_pdf_with_marker",
-        lambda p: ("# Doc\n\nBody.", "Doc", {}),
+        lambda p, *a, **kw: ("# Doc\n\nBody.", "Doc", {}),
     )
 
     url = "https://example.com/force.pdf"
@@ -294,7 +294,7 @@ async def test_process_pdf_force_updates_existing(monkeypatch, setup_test_enviro
     monkeypatch.setattr(
         core,
         "convert_pdf_with_marker",
-        lambda p: ("# Updated Doc\n\nNew body.", "Updated Doc", {}),
+        lambda p, *a, **kw: ("# Updated Doc\n\nNew body.", "Updated Doc", {}),
     )
     res2 = await core.process_url(url, force=True)
 
@@ -317,7 +317,7 @@ async def test_process_pdf_title_fallback_from_url(monkeypatch, setup_test_envir
     monkeypatch.setattr(
         core,
         "convert_pdf_with_marker",
-        lambda p: ("# \n\nBody text.", None, {}),  # title=None
+        lambda p, *a, **kw: ("# \n\nBody text.", None, {}),  # title=None
     )
 
     result = await core.process_url("https://example.com/my_report.pdf")

@@ -265,30 +265,42 @@ async def test_process_url_duplicate_check(mocker, setup_test_environment):
 
 
 @pytest.mark.asyncio
-async def test_process_url_hybrid_ocr_pipeline(mocker, setup_test_environment):
+async def test_process_url_routing_logic(mocker, setup_test_environment):
+    from ril.converters import MarkdownConverter
     # Mock crawler HTML fetching
     mocker.patch("ril.core.fetch_html", new_callable=AsyncMock, return_value="<html>Raw HTML</html>")
     
     # Mock readability cleaning
-    mocker.patch("ril.core.extract_article", return_value=("Hybrid Math Page", "<div>Math formula body</div>"))
+    mocker.patch("ril.core.extract_article", return_value=("Web Page Title", "<div>Web body</div>"))
     
-    # Mock playwright PDF rendering
-    mock_render = AsyncMock()
-    mocker.patch("ril.core.render_html_to_pdf", mock_render)
+    # Mock converter
+    mock_convert = AsyncMock(return_value="# Web Page Title\n\nContent.")
+    mocker.patch("ril.converters.MarkdownConverter.convert", mock_convert)
     
     # Mock convert_pdf_with_marker
-    mock_marker = mocker.patch("ril.core.convert_pdf_with_marker", return_value=("# Hybrid Math Page\n\nParsed formula body.", "Hybrid Math Page", {}))
+    mock_marker = mocker.patch("ril.core.convert_pdf_with_marker", return_value=("# PDF Title\n\nBody", "PDF Title", {}))
+    from pathlib import Path
+    mocker.patch("ril.core.download_pdf", lambda url: Path("/fake/path.pdf"))
     
-    url = "https://example.com/math-page"
+    # 1. Processing a standard web page
+    web_url = "https://example.com/math-page"
+    web_result = await core.process_url(web_url, converter=MarkdownConverter())
+    assert web_result["title"] == "Web Page Title"
+    assert mock_convert.called
+    assert not mock_marker.called
     
-    # Run the pipeline with force_ocr=True
-    result = await core.process_url(url, force_ocr=True)
+    # Reset mocks
+    mock_convert.reset_mock()
+    mock_marker.reset_mock()
     
-    # Assertions
-    assert result["title"] == "Hybrid Math Page"
-    assert result["url"] == url
-    assert mock_render.called
+    # 2. Processing an arXiv PDF link (e.g. arXiv link or direct PDF)
+    pdf_url = "https://arxiv.org/pdf/1706.03762"
+    mocker.patch("pathlib.Path.exists", return_value=True)
+    mocker.patch("pathlib.Path.unlink", return_value=None)
+    
+    pdf_result = await core.process_url(pdf_url)
+    assert pdf_result["title"] == "PDF Title"
+    assert not mock_convert.called
     assert mock_marker.called
-    assert result["word_count"] > 0
 
 

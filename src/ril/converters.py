@@ -1137,7 +1137,7 @@ class MarkdownConverter(BaseConverter):
         
         # 1. Download/resolve images and rewrite URLs in HTML to reference IDs
         logger.info(f"Embedding images as reference base64 for article: {article_slug}")
-        html_with_refs, image_refs, formula_refs = await self._prepare_base64_references(html_content, base_url)
+        html_with_refs, image_refs = await self._prepare_base64_references(html_content, base_url)
         
         # 2. Convert HTML to Markdown using custom converter
         logger.info("Converting HTML to Markdown")
@@ -1153,19 +1153,11 @@ class MarkdownConverter(BaseConverter):
         # 4. Post-process to replace inline references with reference-style links
         # Replace `![alt](img_ref_N)` with `![alt][img_ref_N]`
         for ref_id in image_refs.keys():
-            if ref_id in formula_refs:
-                # Suspected formula image. Wrap tightly in standard Markdown math delimiters
-                markdown_content = re.sub(
-                    rf'!\[(.*?)\]\({ref_id}\)',
-                    rf'$$![\1][{ref_id}]$$',
-                    markdown_content
-                )
-            else:
-                markdown_content = re.sub(
-                    rf'!\[(.*?)\]\({ref_id}\)',
-                    rf'![\1][{ref_id}]',
-                    markdown_content
-                )
+            markdown_content = re.sub(
+                rf'!\[(.*?)\]\({ref_id}\)',
+                rf'![\1][{ref_id}]',
+                markdown_content
+            )
             
         # 5. Append references at the end
         if image_refs:
@@ -1178,24 +1170,23 @@ class MarkdownConverter(BaseConverter):
                 
         return markdown_content
 
-    async def _prepare_base64_references(self, html_content: str, base_url: str) -> Tuple[str, Dict[str, str], set]:
+    async def _prepare_base64_references(self, html_content: str, base_url: str) -> Tuple[str, Dict[str, str]]:
         """
         Finds all image tags, downloads/resolves the images concurrently, and converts them to base64 URIs.
         Replaces the img src in HTML with a reference ID (e.g. img_ref_1).
         Supports web URLs, local file paths, and base64 URIs (which are decoded, optimized, and re-encoded).
-        Returns the modified HTML, a dictionary mapping reference ID -> base64 URI, and a set of reference IDs that are formulas.
+        Returns the modified HTML and a dictionary mapping reference ID -> base64 URI.
         """
         soup = BeautifulSoup(html_content, "lxml")
         img_tags = soup.find_all("img")
         
         if not img_tags:
-            return str(soup), {}, set()
+            return str(soup), {}
 
         download_tasks = []
         img_rewrites = []
         semaphore = asyncio.Semaphore(3)
         image_refs = {}
-        formula_refs = set()
         
         async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
             for idx, img in enumerate(img_tags):
@@ -1205,9 +1196,6 @@ class MarkdownConverter(BaseConverter):
                 
                 ref_id = f"img_ref_{idx}"
                 img["src"] = ref_id
-                
-                if is_formula_img(img):
-                    formula_refs.add(ref_id)
                 
                 # A. Base64 encoded images
                 if src.startswith("data:image/"):
@@ -1302,7 +1290,7 @@ class MarkdownConverter(BaseConverter):
                         b64_str = base64.b64encode(img_bytes).decode("utf-8")
                         image_refs[ref_id] = f"data:{mime_type};base64,{b64_str}"
                         
-        return str(soup), image_refs, formula_refs
+        return str(soup), image_refs
 
 
 

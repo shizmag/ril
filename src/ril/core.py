@@ -107,111 +107,6 @@ def convert_pdf_with_marker(pdf_path: Path, force_ocr: bool = False) -> tuple:
 
     return pdf_markdown, pdf_title, images or {}
 
-async def render_html_to_pdf(html_content: str, title: str, dest_path: Path, rasterize_svg: bool = False) -> None:
-    from playwright.async_api import async_playwright
-    
-    clean_html = f"""<!DOCTYPE html>
-<html>
-<head>
-    <meta charset="utf-8">
-    <title>{title}</title>
-    <style>
-        body {{
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-            line-height: 1.6;
-            color: #111;
-            max-width: 800px;
-            margin: 0 auto;
-            padding: 40px 20px;
-        }}
-        h1, h2, h3, h4, h5, h6 {{
-            font-family: "Outfit", "Inter", sans-serif;
-            margin-top: 1.5em;
-            margin-bottom: 0.5em;
-        }}
-        img, svg {{
-            max-width: 100%;
-            height: auto;
-            display: block;
-            margin: 1.5em auto;
-        }}
-        pre, code {{
-            background: #f4f4f4;
-            padding: 0.2em 0.4em;
-            border-radius: 3px;
-            font-family: monospace;
-        }}
-        pre {{
-            padding: 1em;
-            overflow-x: auto;
-        }}
-    </style>
-</head>
-<body>
-    <h1>{title}</h1>
-    {html_content}
-</body>
-</html>"""
-
-    async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True)
-        try:
-            context = await browser.new_context(
-                viewport={"width": 1280, "height": 800}
-            )
-            page = await context.new_page()
-            await page.set_content(clean_html, wait_until="networkidle")
-            
-            if rasterize_svg:
-                rasterize_script = """
-                () => {
-                    const svgs = document.querySelectorAll('svg');
-                    svgs.forEach(svg => {
-                        try {
-                            const rect = svg.getBoundingClientRect();
-                            const width = rect.width || svg.getAttribute('width') || 'auto';
-                            const height = rect.height || svg.getAttribute('height') || 'auto';
-                            
-                            const xml = new XMLSerializer().serializeToString(svg);
-                            const base64 = btoa(unescape(encodeURIComponent(xml)));
-                            
-                            const img = document.createElement('img');
-                            img.src = 'data:image/svg+xml;base64,' + base64;
-                            
-                            if (width !== 'auto' && width > 0) {
-                                img.style.width = width + 'px';
-                                img.width = width;
-                            }
-                            if (height !== 'auto' && height > 0) {
-                                img.style.height = height + 'px';
-                                img.height = height;
-                            }
-                            
-                            svg.parentNode.replaceChild(img, svg);
-                        } catch (e) {
-                            console.error('Failed to rasterize SVG:', e);
-                        }
-                    });
-                }
-                """
-                await page.evaluate(rasterize_script)
-                
-            try:
-                height = await page.evaluate("document.documentElement.scrollHeight")
-                await page.pdf(
-                    path=str(dest_path),
-                    width="850px",
-                    height=f"{height}px",
-                    print_background=True,
-                    margin={"top": "20px", "bottom": "20px", "left": "20px", "right": "20px"}
-                )
-            except Exception as pdf_err:
-                logger.warning(f"Failed to render unpaginated PDF, falling back to A4: {pdf_err}")
-                await page.pdf(path=str(dest_path), format="A4", print_background=True)
-        finally:
-            await browser.close()
-
-
 async def process_url(
     url: str,
     converter: Optional[BaseConverter] = None,
@@ -262,48 +157,22 @@ async def process_url(
             else:
                 raise e
 
-    if is_pdf or force_ocr:
+    if is_pdf:
         pdf_title = None
         pdf_markdown = ""
         images: dict = {}
         try:
             import base64
             import io
-            import os
-            import tempfile
-            import inspect
 
-            if not is_pdf:
-                # Hybrid pipeline: Web -> PDF -> Marker
-                title, clean_html = extract_article(html)
-                pdf_title = title
-                
-                fd, tmp_name = tempfile.mkstemp(suffix=".pdf")
-                temp_pdf_path = Path(tmp_name)
-                os.close(fd)
-                
-                logger.info(f"Rendering web page clean HTML to temporary PDF: {temp_pdf_path}")
-                await render_html_to_pdf(clean_html, title, temp_pdf_path, rasterize_svg=rasterize_svg)
-                
-            # Safely call convert_pdf_with_marker, checking for signature parameter 'force_ocr'
-            sig = inspect.signature(convert_pdf_with_marker)
-            if "force_ocr" in sig.parameters:
-                pdf_markdown, parsed_title, images = convert_pdf_with_marker(temp_pdf_path, force_ocr=force_ocr)
-            else:
-                pdf_markdown, parsed_title, images = convert_pdf_with_marker(temp_pdf_path)
-
-            if parsed_title:
-                pdf_title = parsed_title
+            pdf_markdown, pdf_title, images = convert_pdf_with_marker(temp_pdf_path, force_ocr=force_ocr)
 
             if not pdf_title:
-                if is_pdf:
-                    url_path = url.split('?')[0].split('/')[-1]
-                    if url_path:
-                        pdf_title = url_path.replace(".pdf", "").replace("_", " ").replace("-", " ").title()
-                    else:
-                        pdf_title = "PDF Document"
+                url_path = url.split('?')[0].split('/')[-1]
+                if url_path:
+                    pdf_title = url_path.replace(".pdf", "").replace("_", " ").replace("-", " ").title()
                 else:
-                    pdf_title = "Document"
+                    pdf_title = "PDF Document"
 
             if images and not config.DISABLE_IMAGES:
                 image_refs = {}
@@ -349,7 +218,7 @@ async def process_url(
         clean_title = sanitize_filename(pdf_title)
         slug = f"{date_str}_{clean_title}"
         if not clean_title:
-            slug = f"{date_str}_pdf_document" if is_pdf else f"{date_str}_document"
+            slug = f"{date_str}_pdf_document"
             
         file_name = f"{slug}.md"
         file_path = config.LIBRARY_DIR / file_name
@@ -379,7 +248,7 @@ async def process_url(
             content=search_text
         )
         
-        logger.info(f"Successfully saved PDF/OCR article: {pdf_title} (ID: {article_id})")
+        logger.info(f"Successfully saved PDF article: {pdf_title} (ID: {article_id})")
         
         return {
             "id": article_id,
