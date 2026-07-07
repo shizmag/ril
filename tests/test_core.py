@@ -45,9 +45,19 @@ async def test_process_url_creates_directory_if_missing(mocker, setup_test_envir
     mocker.patch("ril.core.fetch_html", new_callable=AsyncMock, return_value="<html>Raw HTML</html>")
     # Mock readability cleaning
     mocker.patch("ril.core.extract_article", return_value=("Test Missing Dir", "<div>Test content</div>"))
-    # Mock converter
-    mock_convert = AsyncMock(return_value="# Test Missing Dir\n\nContent.")
-    mocker.patch("ril.converters.MarkdownConverter.convert", mock_convert)
+    # Mock playwright
+    mock_playwright = mocker.patch("ril.core.async_playwright", create=True)
+    mock_p = AsyncMock()
+    mock_playwright.return_value.__aenter__.return_value = mock_p
+    mock_browser = AsyncMock()
+    mock_p.chromium.launch.return_value = mock_browser
+    mock_page = AsyncMock()
+    mock_browser.new_page.return_value = mock_page
+    mock_page.evaluate = AsyncMock(side_effect=[None, None, 500])
+    mock_page.pdf = AsyncMock()
+    
+    # Mock convert_pdf_with_marker
+    mocker.patch("ril.core.convert_pdf_with_marker", return_value=("# Test Missing Dir\n\nContent.", "Test Missing Dir", {}))
     
     # Process url should recreate the directory and succeed
     result = await core.process_url("https://example.com/test-missing-dir", converter=MarkdownConverter())
@@ -66,9 +76,22 @@ async def test_process_url_pipeline(mocker, setup_test_environment):
     # Mock readability cleaning
     mocker.patch("ril.core.extract_article", return_value=("Квантовые процессоры", "<div>Квантовые процессоры Текст статьи</div>"))
     
-    # Mock converter (so we don't try to download mocked images)
-    mock_convert = AsyncMock(return_value="# Квантовые процессоры\n\nТекст статьи.")
-    mocker.patch("ril.converters.MarkdownConverter.convert", mock_convert)
+    # Mock playwright
+    mock_playwright = mocker.patch("ril.core.async_playwright", create=True)
+    mock_p = AsyncMock()
+    mock_playwright.return_value.__aenter__.return_value = mock_p
+    mock_browser = AsyncMock()
+    mock_p.chromium.launch.return_value = mock_browser
+    mock_page = AsyncMock()
+    mock_browser.new_page.return_value = mock_page
+    mock_page.evaluate = AsyncMock(side_effect=[None, None, 500])
+    mock_page.pdf = AsyncMock()
+
+    # Mock convert_pdf_with_marker
+    mocker.patch(
+        "ril.core.convert_pdf_with_marker",
+        return_value=("# Квантовые процессоры\n\nТекст статьи.", "Квантовые процессоры", {})
+    )
     
     # Run the pipeline
     result = await core.process_url("https://habr.com/ru/articles/12345/", converter=MarkdownConverter())
@@ -244,9 +267,19 @@ async def test_process_url_duplicate_check(mocker, setup_test_environment):
     # Mock readability cleaning
     mocker.patch("ril.core.extract_article", return_value=("Duplicate Title", "<div>Content</div>"))
     
-    # Mock converter
-    mock_convert = AsyncMock(return_value="# Duplicate Title\n\nContent.")
-    mocker.patch("ril.converters.MarkdownConverter.convert", mock_convert)
+    # Mock playwright
+    mock_playwright = mocker.patch("ril.core.async_playwright", create=True)
+    mock_p = AsyncMock()
+    mock_playwright.return_value.__aenter__.return_value = mock_p
+    mock_browser = AsyncMock()
+    mock_p.chromium.launch.return_value = mock_browser
+    mock_page = AsyncMock()
+    mock_browser.new_page.return_value = mock_page
+    mock_page.evaluate = AsyncMock(side_effect=[None, None, 500])
+    mock_page.pdf = AsyncMock()
+
+    # Mock convert_pdf_with_marker
+    mocker.patch("ril.core.convert_pdf_with_marker", return_value=("# Duplicate Title\n\nContent.", "Duplicate Title", {}))
     
     # First time processing should succeed
     url = "https://example.com/duplicate-test"
@@ -273,12 +306,20 @@ async def test_process_url_routing_logic(mocker, setup_test_environment):
     # Mock readability cleaning
     mocker.patch("ril.core.extract_article", return_value=("Web Page Title", "<div>Web body</div>"))
     
-    # Mock converter
-    mock_convert = AsyncMock(return_value="# Web Page Title\n\nContent.")
-    mocker.patch("ril.converters.MarkdownConverter.convert", mock_convert)
-    
+    # Mock playwright
+    mock_playwright = mocker.patch("ril.core.async_playwright", create=True)
+    mock_p = AsyncMock()
+    mock_playwright.return_value.__aenter__.return_value = mock_p
+    mock_browser = AsyncMock()
+    mock_p.chromium.launch.return_value = mock_browser
+    mock_page = AsyncMock()
+    mock_browser.new_page.return_value = mock_page
+    mock_page.evaluate = AsyncMock(side_effect=[None, None, 500])
+    mock_page.pdf = AsyncMock()
+
     # Mock convert_pdf_with_marker
-    mock_marker = mocker.patch("ril.core.convert_pdf_with_marker", return_value=("# PDF Title\n\nBody", "PDF Title", {}))
+    mock_marker = mocker.patch("ril.core.convert_pdf_with_marker", return_value=("# Web Page Title\n\nContent.", "Web Page Title", {}))
+    
     from pathlib import Path
     mocker.patch("ril.core.download_pdf", lambda url: Path("/fake/path.pdf"))
     
@@ -286,11 +327,9 @@ async def test_process_url_routing_logic(mocker, setup_test_environment):
     web_url = "https://example.com/math-page"
     web_result = await core.process_url(web_url, converter=MarkdownConverter())
     assert web_result["title"] == "Web Page Title"
-    assert mock_convert.called
-    assert not mock_marker.called
+    assert mock_marker.called
     
     # Reset mocks
-    mock_convert.reset_mock()
     mock_marker.reset_mock()
     
     # 2. Processing an arXiv PDF link (e.g. arXiv link or direct PDF)
@@ -299,8 +338,7 @@ async def test_process_url_routing_logic(mocker, setup_test_environment):
     mocker.patch("pathlib.Path.unlink", return_value=None)
     
     pdf_result = await core.process_url(pdf_url)
-    assert pdf_result["title"] == "PDF Title"
-    assert not mock_convert.called
+    assert pdf_result["title"] == "Web Page Title"
     assert mock_marker.called
 
 

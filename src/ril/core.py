@@ -136,6 +136,8 @@ async def process_url(
     url_lower = url.lower()
     is_pdf = url_lower.split('?')[0].endswith('.pdf') or '/pdf/' in url_lower
     temp_pdf_path = None
+    readability_title = None
+    clean_html = None
     
     if is_pdf:
         try:
@@ -145,7 +147,7 @@ async def process_url(
             raise e
     else:
         try:
-            html = await fetch_html(url, rasterize_svg=rasterize_svg)
+            html = await fetch_html(url, rasterize_svg=True)
         except Exception as e:
             if "Download is starting" in str(e):
                 is_pdf = True
@@ -155,6 +157,200 @@ async def process_url(
                     logger.error(f"Failed to download PDF after Playwright download trigger: {e2}")
                     raise e2
             else:
+                raise e
+
+        # If it's a web page and not a PDF download trigger, render to PDF
+        if not is_pdf:
+            try:
+                # 2. Extract title & clean HTML
+                readability_title, clean_html = extract_article(html)
+                
+                # 3. Reconstruct beautifully styled HTML document
+                styled_html = f"""<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>{readability_title or 'Article'}</title>
+<style>
+  body {{
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    line-height: 1.6;
+    color: #1a1a1a;
+    max-width: 800px;
+    margin: 40px auto;
+    padding: 0 20px;
+    background-color: #ffffff;
+  }}
+  h1 {{
+    font-size: 2.2em;
+    margin-bottom: 0.5em;
+    color: #111111;
+  }}
+  img {{
+    max-width: 100%;
+    height: auto;
+    display: block;
+    margin: 1.5em auto;
+  }}
+  svg, canvas {{
+    max-width: 100%;
+  }}
+  pre, code {{
+    background-color: #f4f4f4;
+    padding: 2px 5px;
+    border-radius: 3px;
+    font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+    font-size: 0.9em;
+  }}
+  pre {{
+    padding: 1em;
+    overflow-x: auto;
+  }}
+  blockquote {{
+    border-left: 4px solid #ccc;
+    margin: 0;
+    padding-left: 1em;
+    color: #666;
+  }}
+  table {{
+    border-collapse: collapse;
+    width: 100%;
+    margin: 1.5em 0;
+  }}
+  th, td {{
+    border: 1px solid #ddd;
+    padding: 8px;
+    text-align: left;
+  }}
+  th {{
+    background-color: #f2f2f2;
+  }}
+</style>
+</head>
+<body>
+  <h1>{readability_title or ''}</h1>
+  {clean_html}
+</body>
+</html>"""
+                
+                import uuid
+                from playwright.async_api import async_playwright
+                
+                temp_dir = Path("./temp")
+                temp_dir.mkdir(exist_ok=True)
+                temp_pdf_path = temp_dir / f"{uuid.uuid4()}.pdf"
+                
+                # 4. Inline Playwright and advanced chart rasterization
+                async with async_playwright() as p:
+                    browser = await p.chromium.launch(headless=True)
+                    page = await browser.new_page()
+                    await page.set_content(styled_html, wait_until="load")
+                    
+                    rasterize_script = """
+                    async () => {
+                        const sleep = ms => new Promise(r => r(ms));
+                        await sleep(500);
+
+                        const svgToPng = async (svgEl) => {
+                            const rect = svgEl.getBoundingClientRect();
+                            const width = rect.width || parseFloat(svgEl.getAttribute('width')) || svgEl.clientWidth || 300;
+                            const height = rect.height || parseFloat(svgEl.getAttribute('height')) || svgEl.clientHeight || 150;
+                            
+                            const serializer = new XMLSerializer();
+                            let svgString = serializer.serializeToString(svgEl);
+                            if (!svgString.match(/^<svg[^>]+xmlns="http:\\/\\/www\\.w3\\.org\\/2000\\/svg"/)) {
+                                svgString = svgString.replace(/^<svg/, '<svg xmlns="http://www.w3.org/2000/svg"');
+                            }
+                            
+                            const img = new Image();
+                            const blob = new Blob([svgString], {type: 'image/svg+xml;charset=utf-8'});
+                            const url = URL.createObjectURL(blob);
+                            
+                            try {
+                                await new Promise((resolve, reject) => {
+                                    img.onload = resolve;
+                                    img.onerror = reject;
+                                    img.src = url;
+                                    setTimeout(reject, 1000);
+                                });
+                                
+                                const canvas = document.createElement('canvas');
+                                canvas.width = width * 2 || 600;
+                                canvas.height = height * 2 || 300;
+                                const ctx = canvas.getContext('2d');
+                                ctx.fillStyle = 'transparent';
+                                ctx.fillRect(0, 0, canvas.width, canvas.height);
+                                ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+                                
+                                return { dataUrl: canvas.toDataURL('image/png'), width, height };
+                            } finally {
+                                URL.revokeObjectURL(url);
+                            }
+                        };
+
+                        const canvasToPng = (canvasEl) => {
+                            const rect = canvasEl.getBoundingClientRect();
+                            const width = rect.width || canvasEl.clientWidth || 300;
+                            const height = rect.height || canvasEl.clientHeight || 150;
+                            return { dataUrl: canvasEl.toDataURL('image/png'), width, height };
+                        };
+
+                        const svgs = Array.from(document.querySelectorAll('svg'));
+                        for (const svg of svgs) {
+                            try {
+                                const { dataUrl, width, height } = await svgToPng(svg);
+                                const img = document.createElement('img');
+                                img.src = dataUrl;
+                                img.style.width = width + 'px';
+                                img.style.height = height + 'px';
+                                img.style.display = 'block';
+                                img.style.margin = '10px auto';
+                                img.style.maxWidth = '100%';
+                                img.style.height = 'auto';
+                                svg.parentNode.replaceChild(img, svg);
+                            } catch (e) {
+                                console.error('Error rasterizing SVG:', e);
+                            }
+                        }
+
+                        const canvases = Array.from(document.querySelectorAll('canvas'));
+                        for (const canvas of canvases) {
+                            try {
+                                const { dataUrl, width, height } = canvasToPng(canvas);
+                                const img = document.createElement('img');
+                                img.src = dataUrl;
+                                img.style.width = width + 'px';
+                                img.style.height = height + 'px';
+                                img.style.display = 'block';
+                                img.style.margin = '10px auto';
+                                img.style.maxWidth = '100%';
+                                img.style.height = 'auto';
+                                canvas.parentNode.replaceChild(img, canvas);
+                            } catch (e) {
+                                console.error('Error rasterizing canvas:', e);
+                            }
+                        }
+                    }
+                    """
+                    await page.evaluate(rasterize_script)
+                    
+                    # 5. Print unpaginated PDF
+                    await page.evaluate("document.body.style.height = 'auto'")
+                    scroll_height = await page.evaluate("Math.max(document.body.scrollHeight, document.documentElement.scrollHeight, 800)")
+                    
+                    await page.pdf(
+                        path=str(temp_pdf_path),
+                        width="800px",
+                        height=f"{scroll_height + 100}px",
+                        print_background=True,
+                        margin={"top": "0px", "bottom": "0px", "left": "0px", "right": "0px"}
+                    )
+                    await browser.close()
+                
+                # 6. Flip is_pdf = True
+                is_pdf = True
+            except Exception as e:
+                logger.error(f"Failed to generate unpaginated PDF from HTML: {e}")
                 raise e
 
     if is_pdf:
@@ -168,11 +364,14 @@ async def process_url(
             pdf_markdown, pdf_title, images = convert_pdf_with_marker(temp_pdf_path, force_ocr=force_ocr)
 
             if not pdf_title:
-                url_path = url.split('?')[0].split('/')[-1]
-                if url_path:
-                    pdf_title = url_path.replace(".pdf", "").replace("_", " ").replace("-", " ").title()
+                if readability_title:
+                    pdf_title = readability_title
                 else:
-                    pdf_title = "PDF Document"
+                    url_path = url.split('?')[0].split('/')[-1]
+                    if url_path:
+                        pdf_title = url_path.replace(".pdf", "").replace("_", " ").replace("-", " ").title()
+                    else:
+                        pdf_title = "PDF Document"
 
             if images and not config.DISABLE_IMAGES:
                 image_refs = {}
@@ -224,16 +423,26 @@ async def process_url(
         file_path = config.LIBRARY_DIR / file_name
         
         config.LIBRARY_DIR.mkdir(parents=True, exist_ok=True)
+        (config.LIBRARY_DIR / "images").mkdir(parents=True, exist_ok=True)
         with open(file_path, "w", encoding="utf-8") as f:
             f.write(pdf_markdown)
             
+        # Save clean HTML source for future conversion/export if it came from web page
+        if clean_html:
+            try:
+                clean_html_path = file_path.with_suffix('.html_clean')
+                with open(clean_html_path, "w", encoding="utf-8") as f:
+                    f.write(clean_html)
+            except Exception as e:
+                logger.error(f"Failed to save clean html: {e}")
+
         # Clean pdf_markdown from images for search indexing and word counting
         clean_pdf_markdown = pdf_markdown
+        clean_pdf_markdown = re.sub(r'data:image/[^;]+;base64,[A-Za-z0-9+/=\s\r\n]+', '', clean_pdf_markdown)
         clean_pdf_markdown = re.sub(r'(?m)^\[img_ref_\w+\].*$', '', clean_pdf_markdown)
         clean_pdf_markdown = re.sub(r'!\[.*?\]\[img_ref_\w+\]', '', clean_pdf_markdown)
         clean_pdf_markdown = re.sub(r'!\[.*?\]\[.*?\]', '', clean_pdf_markdown)
         clean_pdf_markdown = re.sub(r'!\[.*?\]\(.*?\)', '', clean_pdf_markdown)
-        clean_pdf_markdown = re.sub(r'data:image/[^;]+;base64,[A-Za-z0-9+/=\s\r\n]+', '', clean_pdf_markdown)
         
         search_text = re.sub(r'[*#_`\[\]\-!]', ' ', clean_pdf_markdown)
         word_count = len(re.findall(r'\w+', search_text))
