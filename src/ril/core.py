@@ -66,6 +66,48 @@ def download_pdf(url: str) -> Path:
     return temp_pdf_path
 
 
+def is_pdf_file(file_path: Path) -> bool:
+    """Check if the file starts with the %PDF magic bytes."""
+    try:
+        if not file_path.exists():
+            return False
+        with open(file_path, "rb") as f:
+            header = f.read(4)
+            return header == b"%PDF"
+    except Exception:
+        return False
+
+
+async def detect_pdf_url_or_content(url: str) -> bool:
+    """
+    Detect if the URL points to a PDF via heuristics or HEAD request.
+    Gracefully handles HEAD errors (403, 405, timeouts, etc.) with fallbacks.
+    """
+    url_lower = url.lower()
+    is_pdf = url_lower.split('?')[0].endswith('.pdf') or '/pdf/' in url_lower
+    
+    if not url.startswith(("http://", "https://")):
+        return is_pdf
+        
+    try:
+        import httpx
+        async with httpx.AsyncClient(follow_redirects=True, timeout=2.0) as client:
+            resp = await client.head(url)
+            if resp.status_code == 200:
+                content_type = resp.headers.get("content-type", "").lower()
+                if "application/pdf" in content_type:
+                    return True
+                elif "text/html" in content_type:
+                    return is_pdf
+            else:
+                logger.debug(f"HEAD request returned status code {resp.status_code} for {url}")
+    except Exception as e:
+        logger.debug(f"HEAD request failed for {url}: {e}")
+        
+    return is_pdf
+
+
+
 def convert_pdf_with_marker(pdf_path: Path, force_ocr: bool = False) -> tuple:
     """
     Convert a local PDF file to Markdown using marker-pdf.
@@ -136,20 +178,7 @@ async def process_url(
         
     logger.info(f"Processing URL: {url} (rasterize_svg={rasterize_svg}, force_ocr={force_ocr})")
     
-    url_lower = url.lower()
-    is_pdf = url_lower.split('?')[0].endswith('.pdf') or '/pdf/' in url_lower
-    
-    if not is_pdf and url.startswith(("http://", "https://")):
-        try:
-            import httpx
-            with httpx.Client(follow_redirects=True, timeout=2.0) as client:
-                resp = client.head(url)
-                if resp.status_code == 200:
-                    content_type = resp.headers.get("content-type", "").lower()
-                    if "application/pdf" in content_type:
-                        is_pdf = True
-        except Exception as e:
-            logger.debug(f"HEAD request failed for {url}: {e}")
+    is_pdf = await detect_pdf_url_or_content(url)
 
     temp_pdf_path = None
     readability_title = None
@@ -159,22 +188,49 @@ async def process_url(
     if is_pdf:
         try:
             temp_pdf_path = download_pdf(url)
-        except Exception as e:
-            logger.error(f"Failed to download PDF directly: {e}")
-            raise e
-    else:
-        try:
-            html = await fetch_html(url, rasterize_svg=rasterize_svg)
-        except Exception as e:
-            if "Download is starting" in str(e) or "download" in str(e).lower():
-                is_pdf = True
+            if not is_pdf_file(temp_pdf_path):
+                logger.warning(f"Downloaded content from {url} is not a valid PDF (missing %PDF header)")
                 try:
-                    temp_pdf_path = download_pdf(url)
-                except Exception as e2:
-                    logger.error(f"Failed to download PDF after Playwright download trigger: {e2}")
-                    raise e2
+                    with open(temp_pdf_path, "r", encoding="utf-8", errors="ignore") as f:
+                        content_sample = f.read(1024).strip().lower()
+                    if "<html" in content_sample or "<!doctype html" in content_sample:
+                        logger.info("Downloaded content is HTML. Switching to HTML pipeline.")
+                        with open(temp_pdf_path, "r", encoding="utf-8", errors="ignore") as f:
+                            html = f.read()
+                        is_pdf = False
+                        temp_pdf_path.unlink()
+                        temp_pdf_path = None
+                    else:
+                        raise ValueError("Downloaded file is neither PDF nor HTML")
+                except Exception as fe:
+                    if temp_pdf_path and temp_pdf_path.exists():
+                        temp_pdf_path.unlink()
+                    raise ValueError(f"Invalid PDF or HTML downloaded from {url}: {fe}")
+        except Exception as e:
+            if not is_pdf:
+                pass
             else:
+                logger.error(f"Failed to download PDF directly: {e}")
                 raise e
+
+    if not is_pdf:
+        if html is None:
+            try:
+                html = await fetch_html(url, rasterize_svg=rasterize_svg)
+            except Exception as e:
+                if "Download is starting" in str(e) or "download" in str(e).lower():
+                    is_pdf = True
+                    try:
+                        temp_pdf_path = download_pdf(url)
+                        if not is_pdf_file(temp_pdf_path):
+                            if temp_pdf_path.exists():
+                                temp_pdf_path.unlink()
+                            raise ValueError("Downloaded file after Playwright download trigger is not a valid PDF")
+                    except Exception as e2:
+                        logger.error(f"Failed to download PDF after Playwright download trigger: {e2}")
+                        raise e2
+                else:
+                    raise e
 
     if is_pdf:
         pdf_title = None
@@ -512,12 +568,34 @@ def md_to_html_fallback(md_content: str, title: str) -> str:
         placeholders[ph] = match.group(0)
         return ph
 
+    # Code protection logic
+    code_placeholders = {}
+    code_count = 0
+
+    def repl_code(match):
+        nonlocal code_count
+        ph = f"CODEPLACEHOLDER{code_count}"
+        code_count += 1
+        code_placeholders[ph] = match.group(0)
+        return ph
+
     content = md_content
-    # Replace math delimiters to avoid markdown formatting issues inside equations
+
+    # 1. Hide code blocks (HTML pre, HTML code, fenced code blocks, inline backticks)
+    content = re.sub(r'<pre[\s\S]*?</pre>', repl_code, content, flags=re.IGNORECASE)
+    content = re.sub(r'<code[\s\S]*?</code>', repl_code, content, flags=re.IGNORECASE)
+    content = re.sub(r'```[\s\S]*?```', repl_code, content)
+    content = re.sub(r'`[^`\n]+`', repl_code, content)
+
+    # 2. Extract math delimiters to avoid markdown formatting issues inside equations
     content = re.sub(r'\\\[(.*?)\\\]', repl_block_bracket, content, flags=re.DOTALL)
     content = re.sub(r'\$\$(.*?)\$\$', repl_block_double_dollar, content, flags=re.DOTALL)
     content = re.sub(r'\\\((.*?)\\\)', repl_inline_paren, content, flags=re.DOTALL)
     content = re.sub(r'\$([^\$\s](?:[^\$]*?[^\$\s])?)\$', repl_inline_dollar, content)
+
+    # 3. Restore code blocks before running markdown parsing
+    for ph, orig in code_placeholders.items():
+        content = content.replace(ph, orig)
 
     html_out = markdown.markdown(
         content,

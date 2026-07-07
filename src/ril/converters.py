@@ -771,42 +771,84 @@ def infer_image_role_from_tag(img) -> str:
     return "photo"
 
 
+def is_decorative_svg(svg) -> bool:
+    """Check if an SVG tag is decorative (e.g. tiny icons or explicitly hidden)."""
+    width_val = svg.get("width")
+    height_val = svg.get("height")
+    has_viewbox = bool(svg.get("viewBox"))
+    is_aria_hidden = svg.get("aria-hidden") == "true"
+    role = svg.get("role")
+    
+    has_text = bool(svg.get_text(strip=True))
+    has_title = bool(svg.find("title"))
+    has_desc = bool(svg.find("desc"))
+    
+    classes = svg.get("class", [])
+    if isinstance(classes, list):
+        classes = " ".join(classes)
+    elif not isinstance(classes, str):
+        classes = str(classes)
+    classes_lower = classes.lower()
+    
+    img_id = str(svg.get("id", "")).lower()
+    aria_label = str(svg.get("aria-label", "")).lower()
+    combined = classes_lower + " " + img_id + " " + aria_label
+    
+    meaningful_kw = ["chart", "plot", "graph", "diagram", "figure", "math", "formula", "equation"]
+    has_meaningful_kw = any(k in combined for k in meaningful_kw)
+    is_icon_class = any(k in combined for k in ["icon", "logo", "social"])
+    
+    try:
+        w = int(float(width_val)) if width_val else None
+        h = int(float(height_val)) if height_val else None
+        if w is not None and h is not None and w <= 24 and h <= 24:
+            if not (has_title or has_desc or has_meaningful_kw) or is_icon_class:
+                return True
+    except ValueError:
+        pass
+
+    if is_aria_hidden and not (has_title or has_desc or has_meaningful_kw):
+        return True
+        
+    if role != "img" and not has_text and not has_title and not has_desc and not has_viewbox and not has_meaningful_kw:
+        return True
+        
+    if is_icon_class and not (has_title or has_desc or has_meaningful_kw):
+        return True
+        
+    return False
+
+
+def sanitize_svg(svg) -> None:
+    """Sanitize SVG content by unlinking script tags and dynamic event attributes."""
+    for script in svg.find_all("script"):
+        script.decompose()
+        
+    for element in [svg] + svg.find_all():
+        attrs_to_remove = []
+        for attr, val in element.attrs.items():
+            if attr.lower().startswith("on"):
+                attrs_to_remove.append(attr)
+            elif isinstance(val, str) and val.lower().startswith("javascript:"):
+                if attr.lower() in ("href", "xlink:href", "src", "action"):
+                    element[attr] = "#"
+                else:
+                    attrs_to_remove.append(attr)
+                    
+        for attr in attrs_to_remove:
+            del element[attr]
+
+
 def remove_or_preserve_svg(soup: BeautifulSoup) -> None:
     """
-    Remove only decorative tiny icon SVGs, keep meaningful SVGs.
+    Remove only decorative tiny icon SVGs, keep and sanitize meaningful SVGs.
     """
     for svg in soup.find_all("svg"):
-        is_decorative = False
-        
-        width_val = svg.get("width")
-        height_val = svg.get("height")
-        try:
-            w = int(float(width_val)) if width_val else None
-            h = int(float(height_val)) if height_val else None
-            if w is not None and h is not None and w <= 24 and h <= 24:
-                is_decorative = True
-        except ValueError:
-            pass
-            
-        if svg.get("aria-hidden") == "true":
-            is_decorative = True
-            
-        role = svg.get("role")
-        has_text = bool(svg.get_text(strip=True))
-        has_title = bool(svg.find("title"))
-        has_desc = bool(svg.find("desc"))
-        
-        classes = svg.get("class", [])
-        if isinstance(classes, list):
-            classes = " ".join(classes)
-        elif not isinstance(classes, str):
-            classes = str(classes)
-        classes_lower = classes.lower()
-        
-        is_icon_class = any(k in classes_lower for k in ["icon", "logo", "social"])
-        
-        if is_decorative or (role != "img" and not has_text and not has_title and not has_desc and (is_icon_class or svg.get("aria-hidden") == "true")):
+        if is_decorative_svg(svg):
             svg.decompose()
+        else:
+            sanitize_svg(svg)
+
 
 
 

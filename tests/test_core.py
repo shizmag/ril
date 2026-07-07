@@ -322,6 +322,7 @@ async def test_process_url_routing_logic(mocker, setup_test_environment):
     
     from pathlib import Path
     mocker.patch("ril.core.download_pdf", lambda url: Path("/fake/path.pdf"))
+    mocker.patch("ril.core.is_pdf_file", return_value=True)
     
     # 1. Processing a standard web page
     web_url = "https://example.com/math-page"

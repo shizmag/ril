@@ -70,6 +70,7 @@ async def test_pdf_process_url_still_uses_marker(mocker, setup_test_environment)
     # Mock download_pdf to return a fake file path
     fake_pdf = Path("/fake/path.pdf")
     mocker.patch("ril.core.download_pdf", return_value=fake_pdf)
+    mocker.patch("ril.core.is_pdf_file", return_value=True)
     
     # Mock convert_pdf_with_marker to ensure it IS called
     mock_marker = mocker.patch("ril.core.convert_pdf_with_marker", return_value=("# Mock PDF Title\n\nContent.", "Mock PDF Title", {}))
