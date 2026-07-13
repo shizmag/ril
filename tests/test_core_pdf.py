@@ -27,6 +27,14 @@ def _fake_convert(path, markdown="# Fake Title\n\nBody text.", title="Fake Title
     return _impl
 
 
+def _md_path_from_result(result) -> Path:
+    """Return the markdown archive path (process_url may return .epub when format=epub)."""
+    file_path = Path(result["file_path"])
+    if file_path.suffix == ".epub":
+        return file_path.with_suffix(".md")
+    return file_path
+
+
 # ---------------------------------------------------------------------------
 # 1. URL detection
 # ---------------------------------------------------------------------------
@@ -123,8 +131,8 @@ async def test_process_pdf_success_with_mock_marker(monkeypatch, setup_test_envi
     assert result["status"] == "unread"
     assert result["word_count"] > 0
 
-    # Markdown file saved
-    file_path = Path(result["file_path"])
+    # Markdown file saved (default import format is epub, so archive is sibling .md)
+    file_path = _md_path_from_result(result)
     assert file_path.exists()
     content = file_path.read_text(encoding="utf-8")
     assert "Mock PDF Title" in content
@@ -171,7 +179,7 @@ async def test_process_pdf_strips_images_when_disabled(monkeypatch, setup_test_e
 
     result = await core.process_url("https://example.com/doc.pdf")
 
-    content = Path(result["file_path"]).read_text(encoding="utf-8")
+    content = _md_path_from_result(result).read_text(encoding="utf-8")
     assert "figure-0.png" not in content
     assert "data:image/" not in content
     assert "img_ref_" not in content
@@ -202,7 +210,7 @@ async def test_process_pdf_embeds_images_when_enabled(monkeypatch, setup_test_en
 
     result = await core.process_url("https://example.com/doc.pdf")
 
-    content = Path(result["file_path"]).read_text(encoding="utf-8")
+    content = _md_path_from_result(result).read_text(encoding="utf-8")
     assert "[img_ref_0]: data:image/" in content
 
 
@@ -338,7 +346,7 @@ async def test_process_pdf_image_basename_fallback(monkeypatch, setup_test_envir
     monkeypatch.setattr(config, "DISABLE_IMAGES", False)
 
     result = await core.process_url("https://example.com/basename.pdf")
-    content = Path(result["file_path"]).read_text(encoding="utf-8")
+    content = _md_path_from_result(result).read_text(encoding="utf-8")
 
     assert "![Figure 1][img_ref_0]" in content
     assert "[img_ref_0]: data:image/" in content
@@ -396,7 +404,7 @@ async def test_process_pdf_caches_html_when_enabled(monkeypatch, setup_test_envi
     monkeypatch.setattr(config, "CACHE_PDF_HTML", True)
 
     result = await core.process_url("https://example.com/cache.pdf")
-    md_path = Path(result["file_path"])
+    md_path = _md_path_from_result(result)
     html_path = md_path.with_suffix(".html_clean")
 
     assert md_path.exists()

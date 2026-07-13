@@ -14,7 +14,12 @@ logger = logging.getLogger("ril-mcp")
 mcp = FastMCP("Read It Later (RIL)")
 
 @mcp.tool()
-async def process_url(url: str, format: str = "epub", force: bool = False) -> str:
+async def process_url(
+    url: str,
+    format: str = "epub",
+    force: bool = False,
+    force_ocr: bool = False,
+) -> str:
     """
     Download, clean, download images, convert, and save a webpage.
     
@@ -22,6 +27,7 @@ async def process_url(url: str, format: str = "epub", force: bool = False) -> st
         url: The web link/URL of the article to capture.
         format: The format to save the article, either 'epub' (default), 'markdown', or 'html'.
         force: Force update if URL already exists.
+        force_ocr: Force OCR when importing PDFs via marker-pdf.
     """
     try:
         if format not in ("markdown", "html", "epub"):
@@ -34,7 +40,12 @@ async def process_url(url: str, format: str = "epub", force: bool = False) -> st
             converter = EPUBConverter()
         else:
             converter = MarkdownConverter()
-        result = await core.process_url(url, converter=converter, force=force)
+        result = await core.process_url(
+            url,
+            converter=converter,
+            force=force,
+            force_ocr=force_ocr,
+        )
         return (
             f"Saved successfully!\n"
             f"Title: {result['title']}\n"
@@ -44,6 +55,32 @@ async def process_url(url: str, format: str = "epub", force: bool = False) -> st
     except Exception as e:
         logger.error(f"Error in process_url tool: {e}", exc_info=True)
         return f"Failed to save URL: {str(e)}"
+
+
+@mcp.tool()
+async def export_article(article_id: int, format: str = "epub", force: bool = False) -> str:
+    """
+    Export a saved article to epub, html, or markdown.
+
+    Args:
+        article_id: Database ID of the article to export.
+        format: Target format ('epub', 'html', or 'markdown').
+        force: Rebuild the export even when a cached file exists.
+    """
+    try:
+        if format not in ("markdown", "html", "epub"):
+            return "Error: format must be either 'markdown', 'html', or 'epub'"
+
+        result = await core.export_article(article_id, format, force=force)
+        return (
+            f"Exported successfully!\n"
+            f"Title: {result['title']}\n"
+            f"Format: {result['format']}\n"
+            f"File: {result['file_path']}"
+        )
+    except Exception as e:
+        logger.error(f"Error in export_article tool: {e}", exc_info=True)
+        return f"Failed to export article: {str(e)}"
 
 @mcp.tool()
 def search_articles(query: str) -> str:

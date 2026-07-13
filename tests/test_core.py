@@ -1,5 +1,6 @@
 import pytest
 import os
+from pathlib import Path
 from unittest.mock import AsyncMock
 from ril import core, db
 from ril.converters import MarkdownConverter
@@ -205,14 +206,16 @@ async def test_process_url_pdf(mocker, setup_test_environment):
     assert result["title"] == "Mock PDF Title"
     assert result["url"] == "https://example.com/test-paper.pdf"
     assert result["status"] == "unread"
+    assert result["file_path"].endswith(".epub")
 
-    file_path = result["file_path"]
-    assert os.path.exists(file_path)
-    with open(file_path, "r", encoding="utf-8") as f:
-        content = f.read()
-        assert "# Mock PDF Title" in content
-        assert "![image-0.jpg][img_ref_0]" in content
-        assert "[img_ref_0]: data:image/jpeg;base64," in content
+    epub_path = Path(result["file_path"])
+    assert epub_path.exists()
+    md_path = epub_path.with_suffix(".md")
+    assert md_path.exists()
+    content = md_path.read_text(encoding="utf-8")
+    assert "# Mock PDF Title" in content
+    assert "![image-0.jpg][img_ref_0]" in content
+    assert "[img_ref_0]: data:image/jpeg;base64," in content
 
     db_article = db.get_article(result["id"])
     assert db_article is not None
@@ -248,14 +251,13 @@ async def test_process_url_pdf_disabled_images(mocker, monkeypatch, setup_test_e
 
     assert result["title"] == "Mock PDF Title"
 
-    file_path = result["file_path"]
-    assert os.path.exists(file_path)
-    with open(file_path, "r", encoding="utf-8") as f:
-        content = f.read()
-        assert "# Mock PDF Title" in content
-        assert "image-0.jpg" not in content
-        assert "img_ref_0" not in content
-        assert "data:image/jpeg;base64," not in content
+    md_path = Path(result["file_path"]).with_suffix(".md")
+    assert md_path.exists()
+    content = md_path.read_text(encoding="utf-8")
+    assert "# Mock PDF Title" in content
+    assert "image-0.jpg" not in content
+    assert "img_ref_0" not in content
+    assert "data:image/jpeg;base64," not in content
 
 
 

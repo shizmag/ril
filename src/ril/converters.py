@@ -530,8 +530,115 @@ def fix_markdown_image_syntax(md: str) -> str:
     return md
 
 
+_LATEX_COMMAND_RE = re.compile(
+    r"\\(?:frac|inline|mathcal|mathbf|sqrt|sum|int|prod|begin|text|left|right|"
+    r"pm|cdot|times|alpha|beta|eta|epsilon|sigma|mu|nabla|partial|infty|"
+    r"leq|geq|neq|approx|equiv|quad|qquad|mathrm|operatorname)"
+)
+_GENERIC_IMAGE_ALTS = frozenset({"image", "img", "figure", "photo", ""})
+_REF_FORMULA_IMAGE_RE = re.compile(r"!\[([^\]]*)\]\[(img_ref_\w+)\]")
+
+
+def looks_like_latex(text: str) -> bool:
+    """Return True when text plausibly contains LaTeX (e.g. marker image alt text)."""
+    text = (text or "").strip()
+    if not text or text.lower() in _GENERIC_IMAGE_ALTS:
+        return False
+    lower = text.lower()
+    if lower.startswith(("data:", "http://", "https://", "file://")):
+        return False
+    if text.startswith("\\$"):
+        return False
+    if text.startswith("\\"):
+        return True
+    if _LATEX_COMMAND_RE.search(text):
+        return True
+    if re.search(r"[_^{]", text) and ("\\" in text or re.search(r"[A-Za-z]_\{", text)):
+        return True
+    if "^" in text and re.search(r"[A-Za-z]", text) and ("=" in text or "\\" in text):
+        return True
+    return False
+
+
+def normalize_marker_latex(latex: str) -> str:
+    """Normalize LaTeX emitted by marker-pdf before conversion."""
+    latex = (latex or "").strip()
+    latex = re.sub(r"^\\inline\s+", "", latex)
+    latex = latex.replace("—", "-").replace("–", "-")
+    if latex.startswith("$$") and latex.endswith("$$"):
+        latex = latex[2:-2].strip()
+    elif latex.startswith("$") and latex.endswith("$"):
+        latex = latex[1:-1].strip()
+    return latex
+
+
+def is_display_latex(latex: str) -> bool:
+    """Heuristic: display math vs inline math for recovered marker formulas."""
+    normalized = normalize_marker_latex(latex)
+    if r"\begin{" in normalized:
+        return True
+    if "\\\\" in normalized:
+        return True
+    if "=" in normalized:
+        return True
+    if len(normalized) > 80:
+        return True
+    return False
+
+
+def recover_formula_images_in_markdown(md_content: str) -> tuple[str, set[str]]:
+    """
+    Replace marker-style formula images ``![LaTeX][img_ref_N]`` with $/$$ delimiters.
+    Returns updated markdown and the set of img_ref ids removed from definitions.
+    """
+    removed_refs: set[str] = set()
+
+    def _repl(match: re.Match) -> str:
+        alt = match.group(1)
+        ref_id = match.group(2)
+        if not looks_like_latex(alt):
+            return match.group(0)
+        latex = normalize_marker_latex(alt)
+        removed_refs.add(ref_id)
+        if is_display_latex(latex):
+            return f"\n$${latex}$$\n"
+        return f" ${latex}$ "
+
+    updated = _REF_FORMULA_IMAGE_RE.sub(_repl, md_content)
+    for ref_id in removed_refs:
+        updated = re.sub(rf"(?m)^\[{re.escape(ref_id)}\]:.*\n?", "", updated)
+    return updated, removed_refs
+
+
+def _replace_latex_node(
+    soup: BeautifulSoup,
+    node,
+    latex_code: str,
+    is_display: bool,
+    to_markdown: bool,
+) -> None:
+    """Replace an HTML node with Markdown math text or MathML."""
+    latex_code = normalize_marker_latex(latex_code)
+    if to_markdown:
+        math_text = f" $${latex_code}$$ " if is_display else f" ${latex_code}$ "
+        node.replace_with(soup.new_string(math_text))
+        return
+
+    math_soup = convert_latex_to_mathml(latex_code, "block" if is_display else "inline")
+    new_math = math_soup.find("math")
+    if new_math:
+        node.replace_with(new_math)
+        return
+
+    fallback_span = soup.new_tag("span", attrs={"class": "math-fallback"})
+    fallback_span["data-latex"] = latex_code
+    fallback_span.string = f" $${latex_code}$$ " if is_display else f" ${latex_code}$ "
+    node.replace_with(fallback_span)
+
+
 def convert_latex_to_mathml(latex_code: str, display: str = "inline") -> BeautifulSoup:
     """Converts LaTeX formula string to namespaced MathML BeautifulSoup structure."""
+    latex_code = normalize_marker_latex(latex_code)
     try:
         mathml_str = latex2mathml.converter.convert(latex_code)
         math_soup = BeautifulSoup(mathml_str, "xml")
@@ -542,7 +649,11 @@ def convert_latex_to_mathml(latex_code: str, display: str = "inline") -> Beautif
         return math_soup
     except Exception as e:
         logger.error(f"Failed to convert LaTeX to MathML: {e}")
-        fallback = BeautifulSoup(f'<span class="math-fallback">{latex_code}</span>', "xml")
+        safe = html.escape(latex_code, quote=True)
+        fallback = BeautifulSoup(
+            f'<span class="math-fallback" data-latex="{safe}">{html.escape(latex_code)}</span>',
+            "xml",
+        )
         return fallback
 
 
@@ -596,39 +707,34 @@ def preprocess_formulas(soup: BeautifulSoup, to_markdown: bool = False) -> None:
                 fallback_span.string = f" $${latex_code}$$ "
                 el.replace_with(fallback_span)
 
-    # 0.1 Convert formula images (e.g. on Habr: <img class="formula inline" source="...">)
-    for img in soup.find_all("img"):
+    # 0.1 Convert formula images (class-based or LaTeX in alt text from marker-pdf)
+    for img in list(soup.find_all("img")):
         classes = img.get("class", [])
         if isinstance(classes, str):
             classes = [classes]
+
+        latex_code = None
+        is_display = False
+
         if any("formula" in c for c in classes) or any("katex" in c for c in classes) or any("math" in c for c in classes):
             latex_code = img.get("source") or img.get("alt")
-            if not latex_code:
-                continue
-            latex_code = latex_code.strip()
-            
-            # Extract display/inline status
-            is_display = "inline" not in classes
-            # If LaTeX starts/ends with $$ or $, strip them
-            if latex_code.startswith("$$") and latex_code.endswith("$$"):
-                latex_code = latex_code[2:-2].strip()
-                is_display = True
-            elif latex_code.startswith("$") and latex_code.endswith("$"):
-                latex_code = latex_code[1:-1].strip()
-                is_display = False
-                
-            if to_markdown:
-                math_text = f" $${latex_code}$$ " if is_display else f" ${latex_code}$ "
-                img.replace_with(soup.new_string(math_text))
-            else:
-                math_soup = convert_latex_to_mathml(latex_code, "block" if is_display else "inline")
-                new_math = math_soup.find("math")
-                if new_math:
-                    img.replace_with(new_math)
-                else:
-                    fallback_span = soup.new_tag("span", attrs={"class": "math-fallback"})
-                    fallback_span.string = f" $${latex_code}$$ " if is_display else f" ${latex_code}$ "
-                    img.replace_with(fallback_span)
+            if latex_code:
+                latex_code = latex_code.strip()
+                is_display = "inline" not in classes
+                if latex_code.startswith("$$") and latex_code.endswith("$$"):
+                    latex_code = latex_code[2:-2].strip()
+                    is_display = True
+                elif latex_code.startswith("$") and latex_code.endswith("$"):
+                    latex_code = latex_code[1:-1].strip()
+                    is_display = False
+        else:
+            alt = (img.get("alt") or "").strip()
+            if looks_like_latex(alt):
+                latex_code = alt
+                is_display = is_display_latex(alt)
+
+        if latex_code:
+            _replace_latex_node(soup, img, latex_code, is_display, to_markdown)
 
     # 1. Convert KaTeX elements (usually <span class="katex"> or <div class="katex-display">)
     for el in soup.find_all(class_=re.compile(r"\bkatex\b|\bkatex-display\b")):
@@ -752,6 +858,10 @@ def preprocess_formulas(soup: BeautifulSoup, to_markdown: bool = False) -> None:
 
 
 def is_formula_img(img) -> bool:
+    alt = (img.get("alt") or "").strip()
+    if looks_like_latex(alt):
+        return True
+
     keywords = ['math', 'tex', 'eq', 'formula', 'katex']
     # Check classes
     classes = img.get("class", [])
@@ -891,9 +1001,10 @@ def remove_or_preserve_svg(soup: BeautifulSoup) -> None:
 def validate_and_normalize_math(md_content: str) -> str:
     """
     Validate and normalize mathematical formulas to be standard Pandoc markdown compliant.
-    Specifically, wraps display equations in $$...$$ and inline equations in $...$.
+    Converts \\(...\\)/\\[...\\] delimiters, recovers formula image refs, and strips \\inline.
     """
-    content = re.sub(r'\\\[(.*?)\\\]', r'$$\1$$', md_content, flags=re.DOTALL)
+    content, _ = recover_formula_images_in_markdown(md_content)
+    content = re.sub(r'\\\[(.*?)\\\]', r'$$\1$$', content, flags=re.DOTALL)
     content = re.sub(r'\\\((.*?)\\\)', r'$\1$', content, flags=re.DOTALL)
     return content
 
@@ -2312,6 +2423,7 @@ def build_epub_debug_report(epub_bytes: bytes) -> dict[str, Any]:
     chapter_count = 0
     image_count = 0
     math_ml_count = 0
+    math_fallback_count = 0
 
     with zipfile.ZipFile(io.BytesIO(epub_bytes), "r") as epub:
         for name in epub.namelist():
@@ -2322,6 +2434,7 @@ def build_epub_debug_report(epub_bytes: bytes) -> dict[str, Any]:
                 except Exception:
                     continue
                 math_ml_count += xhtml.count("<math")
+                math_fallback_count += xhtml.count('class="math-fallback"')
             elif name.startswith("OEBPS/images/") and not name.endswith("/"):
                 image_count += 1
 
@@ -2329,6 +2442,7 @@ def build_epub_debug_report(epub_bytes: bytes) -> dict[str, Any]:
         "chapter_count": chapter_count,
         "image_count": image_count,
         "math_ml_count": math_ml_count,
+        "math_fallback_count": math_fallback_count,
         "validation_warnings": validation_warnings,
     }
 

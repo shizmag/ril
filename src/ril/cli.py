@@ -16,11 +16,29 @@ def handle_add(args):
             converter = EPUBConverter()
         else:
             converter = MarkdownConverter()
-        result = asyncio.run(core.process_url(args.url, converter=converter, force=args.force))
+        result = asyncio.run(core.process_url(
+            args.url,
+            converter=converter,
+            force=args.force,
+            force_ocr=args.force_ocr,
+        ))
         print("Success!")
         print(f"Title:     {result['title']}")
         print(f"Words:     {result['word_count']}")
         print(f"Saved:     {result['file_path']}")
+    except Exception as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+
+
+def handle_export(args):
+    """Export a saved article to epub, html, or markdown."""
+    try:
+        result = asyncio.run(core.export_article(args.id, args.format, force=args.force))
+        print("Export successful!")
+        print(f"Title:  {result['title']}")
+        print(f"Format: {result['format']}")
+        print(f"Saved:  {result['file_path']}")
     except Exception as e:
         print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)
@@ -195,6 +213,13 @@ def main():
     parser_add.add_argument("url", help="URL of the page to scrape")
     parser_add.add_argument("--format", choices=["markdown", "html", "epub"], default="epub", help="Format to save the article (default: epub)")
     parser_add.add_argument("-f", "--force", action="store_true", help="Force update if URL already exists")
+    parser_add.add_argument("--force-ocr", action="store_true", help="Force OCR when importing PDFs via marker-pdf")
+
+    # export command
+    parser_export = subparsers.add_parser("export", help="Export a saved article to another format")
+    parser_export.add_argument("id", type=int, help="Article ID")
+    parser_export.add_argument("--format", choices=["markdown", "html", "epub"], default="epub", help="Export format (default: epub)")
+    parser_export.add_argument("-f", "--force", action="store_true", help="Rebuild export even if cached")
     
     # search command
     parser_search = subparsers.add_parser("search", help="Search article content with FTS5")
@@ -239,6 +264,7 @@ def main():
     commands = {
         "mcp": handle_mcp,
         "add": handle_add,
+        "export": handle_export,
         "search": handle_search,
         "stats": handle_stats,
         "list": handle_list,

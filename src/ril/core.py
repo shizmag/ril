@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 # Initialize DB on load
 db.init_db()
 
-EXPORT_PIPELINE_VERSION = "2026-07-epub-fidelity-1"
+EXPORT_PIPELINE_VERSION = "2026-07-pdf-formula-fidelity-1"
 
 
 def sanitize_filename(title: str) -> str:
@@ -261,6 +261,10 @@ async def process_url(
                     else:
                         pdf_title = "PDF Document"
 
+            from ril.converters import recover_formula_images_in_markdown, validate_and_normalize_math
+
+            pdf_markdown, _recovered_refs = recover_formula_images_in_markdown(pdf_markdown)
+
             if images and not config.DISABLE_IMAGES:
                 image_refs = {}
                 matched_image_keys = set()
@@ -328,6 +332,8 @@ async def process_url(
                 pdf_markdown = re.sub(r'!\[.*?\]\(.*?\)', '', pdf_markdown)
                 pdf_markdown = re.sub(r'!\[.*?\]\[.*?\]', '', pdf_markdown)
 
+            pdf_markdown = validate_and_normalize_math(pdf_markdown)
+
         except Exception as e:
             logger.error(f"Error converting PDF via marker-pdf: {e}")
             raise e
@@ -352,17 +358,13 @@ async def process_url(
         with open(file_path, "w", encoding="utf-8") as f:
             f.write(pdf_markdown)
 
-        if config.CACHE_PDF_HTML:
-            try:
-                from ril.converters import validate_and_normalize_math
-
-                clean_html_path = file_path.with_suffix(".html_clean")
-                normalized_md = validate_and_normalize_math(pdf_markdown)
-                cached_html = md_to_html_fallback(normalized_md, pdf_title)
-                with open(clean_html_path, "w", encoding="utf-8") as f:
-                    f.write(cached_html)
-            except Exception as e:
-                logger.error(f"Failed to save PDF html cache: {e}")
+        try:
+            clean_html_path = file_path.with_suffix(".html_clean")
+            cached_html = md_to_html_fallback(pdf_markdown, pdf_title)
+            with open(clean_html_path, "w", encoding="utf-8") as f:
+                f.write(cached_html)
+        except Exception as e:
+            logger.error(f"Failed to save PDF html cache: {e}")
 
         # Save import sidecar metadata from marker-pdf
         import json
@@ -410,8 +412,10 @@ async def process_url(
         )
         
         logger.info(f"Successfully saved PDF article: {pdf_title} (ID: {article_id})")
-        
-        return {
+
+        from ril.converters import EPUBConverter
+
+        result = {
             "id": article_id,
             "url": url,
             "title": pdf_title,
@@ -420,6 +424,13 @@ async def process_url(
             "char_count": char_count,
             "status": "unread"
         }
+
+        if isinstance(converter, EPUBConverter):
+            export_res = await export_article(article_id, "epub", force=True)
+            result["file_path"] = export_res["file_path"]
+            result["export_format"] = "epub"
+
+        return result
     else:
         # 2. Extract title & clean HTML
         title, clean_html = extract_article(html)
@@ -678,12 +689,17 @@ def md_to_html_fallback(md_content: str, title: str) -> str:
     import re
     import markdown
     import html as _html
+    from ril.converters import looks_like_latex, validate_and_normalize_math
 
     if not md_content:
         md_content = ""
 
+    md_content = validate_and_normalize_math(md_content)
+
     placeholders = {}
     placeholder_count = 0
+    escaped_dollar_placeholders = {}
+    escaped_dollar_count = 0
 
     def _math_block_wrapper(latex: str) -> str:
         safe_latex = _html.escape(latex.strip(), quote=True)
@@ -716,9 +732,19 @@ def md_to_html_fallback(md_content: str, title: str) -> str:
 
     def repl_inline_dollar(match):
         nonlocal placeholder_count
+        latex = match.group(1)
+        if not looks_like_latex(latex) and not re.search(r"[\\_{^=]", latex):
+            return match.group(0)
         ph = f"MATHINLINEPLACEHOLDER{placeholder_count}"
         placeholder_count += 1
-        placeholders[ph] = _math_inline_wrapper(match.group(1))
+        placeholders[ph] = _math_inline_wrapper(latex)
+        return ph
+
+    def repl_escaped_dollar(match):
+        nonlocal escaped_dollar_count
+        ph = f"ESCAPEDDOLLARPLACEHOLDER{escaped_dollar_count}"
+        escaped_dollar_count += 1
+        escaped_dollar_placeholders[ph] = match.group(0)
         return ph
 
     # Code protection logic
@@ -740,13 +766,16 @@ def md_to_html_fallback(md_content: str, title: str) -> str:
     content = re.sub(r'```[\s\S]*?```', repl_code, content)
     content = re.sub(r'`[^`\n]+`', repl_code, content)
 
-    # 2. Extract math delimiters to avoid markdown formatting issues inside equations
+    # 2. Protect escaped currency dollars before math extraction
+    content = re.sub(r'\\\$', repl_escaped_dollar, content)
+
+    # 3. Extract math delimiters to avoid markdown formatting issues inside equations
     content = re.sub(r'\\\[(.*?)\\\]', repl_block_bracket, content, flags=re.DOTALL)
     content = re.sub(r'\$\$(.*?)\$\$', repl_block_double_dollar, content, flags=re.DOTALL)
     content = re.sub(r'\\\((.*?)\\\)', repl_inline_paren, content, flags=re.DOTALL)
-    content = re.sub(r'\$([^\$\s](?:[^\$]*?[^\$\s])?)\$', repl_inline_dollar, content)
+    content = re.sub(r'\$([^\$\n]+?)\$', repl_inline_dollar, content)
 
-    # 3. Restore code blocks before running markdown parsing
+    # 4. Restore code blocks before running markdown parsing
     for ph, orig in code_placeholders.items():
         content = content.replace(ph, orig)
 
@@ -756,10 +785,14 @@ def md_to_html_fallback(md_content: str, title: str) -> str:
             "extra",
             "sane_lists",
             "toc",
+            "tables",
         ]
     )
 
     for ph, orig in placeholders.items():
+        html_out = html_out.replace(ph, orig)
+
+    for ph, orig in escaped_dollar_placeholders.items():
         html_out = html_out.replace(ph, orig)
 
     html_out = _wrap_figures_in_html(html_out)
