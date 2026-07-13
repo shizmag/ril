@@ -532,11 +532,32 @@ def fix_markdown_image_syntax(md: str) -> str:
 
 _LATEX_COMMAND_RE = re.compile(
     r"\\(?:frac|inline|mathcal|mathbf|sqrt|sum|int|prod|begin|text|left|right|"
-    r"pm|cdot|times|alpha|beta|eta|epsilon|sigma|mu|nabla|partial|infty|"
-    r"leq|geq|neq|approx|equiv|quad|qquad|mathrm|operatorname)"
+    r"pm|cdot|times|alpha|beta|gamma|delta|epsilon|sigma|mu|nabla|partial|infty|"
+    r"leq|geq|neq|approx|equiv|quad|qquad|mathrm|operatorname|tilde|widetilde|"
+    r"rightarrow|leftarrow|Rightarrow|Leftarrow|cdot|ldots|cdots|phi|theta|"
+    r"lambda|omega|pi|sum|prod|limits|overline|underline|hat|bar|vec)"
 )
+_MARKER_HTML_SPAN_RE = re.compile(r'<span id="page-\d+-\d+"></span>\s*', re.IGNORECASE)
 _GENERIC_IMAGE_ALTS = frozenset({"image", "img", "figure", "photo", ""})
 _REF_FORMULA_IMAGE_RE = re.compile(r"!\[([^\]]*)\]\[(img_ref_\w+)\]")
+_DIRECT_FORMULA_IMAGE_RE = re.compile(r"!\[([^\]]*)\]\(([^)\s]+)\)")
+_TEXT_MATH_SEGMENT_RE = re.compile(
+    r"\\\[.*?\\\]|\\\(.*?\\\)|\$\$.*?\$\$|(?<!\\)\$(?!\$)(?:\\.|[^\$\\])+(?<!\\)\$(?!\$)",
+    re.DOTALL,
+)
+_UNICODE_LATEX_REPLACEMENTS = {
+    "⟨": r"\langle ",
+    "⟩": r"\rangle ",
+    "×": r"\times ",
+    "·": r"\cdot ",
+    "−": "-",
+    "∞": r"\infty ",
+    "≤": r"\leq ",
+    "≥": r"\geq ",
+    "≠": r"\neq ",
+    "≈": r"\approx ",
+    "±": r"\pm ",
+}
 
 
 def looks_like_latex(text: str) -> bool:
@@ -553,9 +574,13 @@ def looks_like_latex(text: str) -> bool:
         return True
     if _LATEX_COMMAND_RE.search(text):
         return True
+    if re.search(r"[_^]\{", text):
+        return True
     if re.search(r"[_^{]", text) and ("\\" in text or re.search(r"[A-Za-z]_\{", text)):
         return True
     if "^" in text and re.search(r"[A-Za-z]", text) and ("=" in text or "\\" in text):
+        return True
+    if re.search(r"[A-Za-z]_[A-Za-z0-9]", text) and len(text) <= 12:
         return True
     return False
 
@@ -570,6 +595,155 @@ def normalize_marker_latex(latex: str) -> str:
     elif latex.startswith("$") and latex.endswith("$"):
         latex = latex[1:-1].strip()
     return latex
+
+
+def repair_marker_latex(latex: str) -> str:
+    """Fix common marker-pdf OCR/transcription mistakes in LaTeX."""
+    latex = normalize_marker_latex(latex)
+    latex = re.sub(r"\\langle\s*/\\text\{", r"\\langle \\text{", latex)
+    latex = re.sub(r"\\langle\s*/", r"\\langle ", latex)
+    latex = re.sub(r"\\text\{\s+", r"\\text{", latex)
+    latex = re.sub(r"\s+\}", "}", latex)
+    latex = re.sub(r"\\qquad\s+\\qquad", r"\\qquad ", latex)
+    latex = re.sub(r"\s*,\s*\\,", r", \\,", latex)
+    return latex.strip()
+
+
+def infer_latex_alt_from_image_name(img_name: str) -> Optional[str]:
+    """Infer LaTeX alt text from a marker image filename when the alt is empty."""
+    stem = Path(unquote(img_name)).stem.strip()
+    if stem.startswith("\\"):
+        return stem
+    if _LATEX_COMMAND_RE.search(stem):
+        return stem
+    if re.search(r"[_^]\{", stem):
+        return stem
+    return None
+
+
+def classify_pdf_image_role(img_obj, img_name: str = "") -> str:
+    """
+    Classify a marker-pdf raster image by dimensions for alt-text enrichment.
+
+    Returns one of: formula-inline, formula-display, figure, spacer.
+    """
+    try:
+        width, height = img_obj.size
+    except Exception:
+        return "figure"
+
+    if width <= 16 and height <= 16:
+        return "spacer"
+
+    name_lower = (img_name or "").lower()
+    if any(k in name_lower for k in ("eq", "formula", "math", "equation")):
+        return "formula-inline" if height <= 120 else "formula-display"
+
+    aspect = width / max(height, 1)
+    area = width * height
+
+    if height <= 80 and aspect >= 1.5:
+        return "formula-inline"
+    if height <= 120 and width <= 600 and aspect >= 0.8:
+        return "formula-inline"
+    if height <= 200 and width <= 800 and area < 200_000:
+        if height > 80 or aspect < 1.5:
+            return "formula-display"
+
+    return "figure"
+
+
+def enrich_image_alt_text(alt: str, img_name: str, img_obj=None) -> str:
+    """Fill empty or generic image alt text from filename and dimension heuristics."""
+    alt = (alt or "").strip()
+    if alt and alt.lower() not in _GENERIC_IMAGE_ALTS:
+        return alt
+    inferred = infer_latex_alt_from_image_name(img_name)
+    if inferred:
+        return inferred
+    if img_obj is not None:
+        role = classify_pdf_image_role(img_obj, img_name)
+        if role in ("formula-inline", "formula-display"):
+            return role
+        if role == "figure":
+            return "figure"
+    return alt
+
+
+def strip_marker_html_artifacts(md_content: str) -> str:
+    """Remove marker-pdf HTML anchor spans embedded in markdown."""
+    return _MARKER_HTML_SPAN_RE.sub("", md_content)
+
+
+def _protect_code_regions(md_content: str) -> tuple[str, dict[str, str]]:
+    """Temporarily replace fenced/inline code so math passes do not touch it."""
+    placeholders: dict[str, str] = {}
+
+    def _store(match: re.Match) -> str:
+        key = f"CODEPROTECT{len(placeholders)}"
+        placeholders[key] = match.group(0)
+        return key
+
+    protected = re.sub(r"```[\s\S]*?```", _store, md_content)
+    protected = re.sub(r"`[^`\n]+`", _store, protected)
+    protected = re.sub(r"<pre[\s\S]*?</pre>", _store, protected, flags=re.IGNORECASE)
+    protected = re.sub(r"<code[\s\S]*?</code>", _store, protected, flags=re.IGNORECASE)
+    return protected, placeholders
+
+
+def _restore_code_regions(md_content: str, placeholders: dict[str, str]) -> str:
+    restored = md_content
+    for key, original in placeholders.items():
+        restored = restored.replace(key, original)
+    return restored
+
+
+def repair_math_delimiters_in_markdown(md_content: str) -> str:
+    """Repair LaTeX inside existing $...$ and $$...$$ markdown delimiters."""
+    def _repair_block(match: re.Match) -> str:
+        return f"$${repair_marker_latex(match.group(1))}$$"
+
+    def _repair_inline(match: re.Match) -> str:
+        inner = match.group(1)
+        if inner.startswith("\\$"):
+            return match.group(0)
+        return f"${repair_marker_latex(inner)}$"
+
+    content = re.sub(r"\$\$(.*?)\$\$", _repair_block, md_content, flags=re.DOTALL)
+    content = re.sub(
+        r"(?<!\$)\$(?!\$)([^\$\n]+?)(?<!\$)\$(?!\$)",
+        _repair_inline,
+        content,
+    )
+    return content
+
+
+def sanitize_latex_for_conversion(latex: str) -> str:
+    """Apply additional cleanup before handing LaTeX to latex2mathml."""
+    latex = repair_marker_latex(latex)
+    for src, dst in _UNICODE_LATEX_REPLACEMENTS.items():
+        latex = latex.replace(src, dst)
+    latex = re.sub(r"\s+", " ", latex).strip()
+    latex = re.sub(r"\(\s+", "(", latex)
+    latex = re.sub(r"\s+\)", ")", latex)
+    return latex
+
+
+def extract_latex_from_image_attrs(img) -> Optional[str]:
+    """Return LaTeX from img alt/title/source when it looks like a formula."""
+    for attr in ("source", "alt", "title"):
+        value = (img.get(attr) or "").strip()
+        if looks_like_latex(value):
+            return value
+    return None
+
+
+def _latex_delimiter_for_recovered(latex: str) -> str:
+    """Wrap recovered LaTeX in inline or display markdown delimiters."""
+    latex = normalize_marker_latex(latex)
+    if is_display_latex(latex):
+        return f"\n$${latex}$$\n"
+    return f" ${latex}$ "
 
 
 def is_display_latex(latex: str) -> bool:
@@ -588,26 +762,246 @@ def is_display_latex(latex: str) -> bool:
 
 def recover_formula_images_in_markdown(md_content: str) -> tuple[str, set[str]]:
     """
-    Replace marker-style formula images ``![LaTeX][img_ref_N]`` with $/$$ delimiters.
-    Returns updated markdown and the set of img_ref ids removed from definitions.
+    Replace marker-style formula images with $/$$ delimiters.
+
+    Handles both reference links (``![LaTeX][img_ref_N]``) and direct image paths
+    (``![LaTeX](figure-0.png)``). Returns updated markdown and removed img_ref ids.
     """
     removed_refs: set[str] = set()
 
-    def _repl(match: re.Match) -> str:
+    def _repl_ref(match: re.Match) -> str:
         alt = match.group(1)
         ref_id = match.group(2)
         if not looks_like_latex(alt):
             return match.group(0)
-        latex = normalize_marker_latex(alt)
         removed_refs.add(ref_id)
-        if is_display_latex(latex):
-            return f"\n$${latex}$$\n"
-        return f" ${latex}$ "
+        return _latex_delimiter_for_recovered(alt)
 
-    updated = _REF_FORMULA_IMAGE_RE.sub(_repl, md_content)
+    def _repl_direct(match: re.Match) -> str:
+        alt = match.group(1)
+        if not looks_like_latex(alt):
+            return match.group(0)
+        return _latex_delimiter_for_recovered(alt)
+
+    updated = _REF_FORMULA_IMAGE_RE.sub(_repl_ref, md_content)
+    updated = _DIRECT_FORMULA_IMAGE_RE.sub(_repl_direct, updated)
     for ref_id in removed_refs:
         updated = re.sub(rf"(?m)^\[{re.escape(ref_id)}\]:.*\n?", "", updated)
     return updated, removed_refs
+
+
+def collapse_split_display_math(md_content: str) -> str:
+    """Merge adjacent display-math blocks and drop empty $$ pairs split by marker."""
+    content, placeholders = _protect_code_regions(md_content)
+    # Line-only empty blocks; avoid matching closing+opening delimiters of adjacent math.
+    content = re.sub(r"(?m)^\$\$\s*\$\$\s*$", "", content)
+
+    prev = None
+    while prev != content:
+        prev = content
+        content = re.sub(
+            r"\$\$(.*?)\$\$\s+\$\$(.*?)\$\$",
+            lambda m: f"$${m.group(1).strip()} {m.group(2).strip()}$$",
+            content,
+            flags=re.DOTALL,
+        )
+
+    return _restore_code_regions(content, placeholders)
+
+
+def remove_unused_img_ref_definitions(md_content: str) -> str:
+    """Drop orphan ``[img_ref_N]:`` definitions not referenced in markdown."""
+    used_refs = set(re.findall(r"!\[[^\]]*\]\[(img_ref_\w+)\]", md_content))
+
+    def _keep_or_drop(match: re.Match) -> str:
+        ref_id = match.group(1)
+        return match.group(0) if ref_id in used_refs else ""
+
+    return re.sub(r"(?m)^\[(img_ref_\w+)\]:.*\n?", _keep_or_drop, md_content)
+
+
+def _image_path_candidates(img_name: str) -> list[str]:
+    """Build path variants for matching marker image links in markdown."""
+    candidates: list[str] = []
+    seen: set[str] = set()
+    for raw in (img_name, Path(img_name).name, unquote(img_name), unquote(Path(img_name).name)):
+        normalized = raw.replace("\\", "/")
+        for variant in (normalized, quote(normalized, safe="/")):
+            if variant and variant not in seen:
+                seen.add(variant)
+                candidates.append(variant)
+    return candidates
+
+
+def embed_pdf_images_in_markdown(
+    pdf_markdown: str,
+    images: dict,
+) -> tuple[str, dict[str, dict[str, Any]]]:
+    """
+    Embed marker-pdf images as base64 reference definitions.
+
+    Returns updated markdown and per-ref metadata (role, dimensions, source name).
+    Only referenced images receive definition lines at the document tail.
+    """
+    import base64
+    import io
+
+    image_roles: dict[str, dict[str, Any]] = {}
+    ref_by_image_key: dict[str, str] = {}
+    image_refs: dict[str, str] = {}
+
+    for idx, (img_name, img_obj) in enumerate(images.items()):
+        ref_id = f"img_ref_{idx}"
+        ref_by_image_key[img_name] = ref_id
+
+        try:
+            width, height = img_obj.size
+        except Exception:
+            width, height = None, None
+
+        image_roles[ref_id] = {
+            "role": classify_pdf_image_role(img_obj, img_name),
+            "width": width,
+            "height": height,
+            "source_name": img_name,
+        }
+
+        buffered = io.BytesIO()
+        img_format = img_obj.format if img_obj.format else "JPEG"
+        working_img = img_obj
+        if working_img.mode != "RGB" and img_format in ("JPEG", "JPG"):
+            working_img = working_img.convert("RGB")
+        try:
+            from PIL import ImageFile
+
+            ImageFile.LOAD_TRUNCATED_IMAGES = True
+            working_img.load()
+            working_img.save(buffered, format=img_format)
+        except Exception as save_err:
+            logger.warning(
+                f"Failed to save image {img_name} as {img_format}: {save_err}. Falling back to PNG."
+            )
+            buffered = io.BytesIO()
+            img_format = "PNG"
+            try:
+                if working_img.mode not in ("RGB", "RGBA"):
+                    working_img = working_img.convert(
+                        "RGBA"
+                        if "transparency" in working_img.info or working_img.mode == "P"
+                        else "RGB"
+                    )
+                working_img.save(buffered, format="PNG")
+            except Exception as png_err:
+                logger.error(f"Failed to save image {img_name} as PNG fallback: {png_err}")
+                continue
+
+        img_b64 = base64.b64encode(buffered.getvalue()).decode("utf-8")
+        mime_type = f"image/{img_format.lower()}"
+        if mime_type == "image/jpg":
+            mime_type = "image/jpeg"
+        image_refs[ref_id] = f"data:{mime_type};base64,{img_b64}"
+
+    matched_image_keys: set[str] = set()
+    for img_name, img_obj in images.items():
+        ref_id = ref_by_image_key[img_name]
+        candidates = _image_path_candidates(img_name)
+        full_path = candidates[0] if candidates else img_name
+
+        for candidate in candidates:
+            escaped_name = re.escape(candidate)
+            if candidate == full_path:
+                pattern = rf"!\[(.*?)\]\({escaped_name}\)"
+            else:
+                pattern = rf"!\[(.*?)\]\((?:{escaped_name}|[^)]*/{escaped_name})\)"
+
+            def _replace_with_ref(match, _ref_id=ref_id, _img_name=img_name, _img_obj=img_obj):
+                alt = enrich_image_alt_text(match.group(1), _img_name, _img_obj)
+                return f"![{alt}][{_ref_id}]"
+
+            pdf_markdown, replacements = re.subn(
+                pattern,
+                _replace_with_ref,
+                pdf_markdown,
+            )
+            if replacements:
+                matched_image_keys.add(img_name)
+                break
+
+    for unmatched_key in set(images.keys()) - matched_image_keys:
+        logger.warning(f"PDF image key not matched in markdown: {unmatched_key}")
+
+    used_refs = set(re.findall(r"!\[[^\]]*\]\[(img_ref_\w+)\]", pdf_markdown))
+    if used_refs:
+        pdf_markdown += "\n\n"
+        for ref_id, b64_uri in image_refs.items():
+            if ref_id in used_refs:
+                pdf_markdown += f"[{ref_id}]: {b64_uri}\n"
+
+    return pdf_markdown, image_roles
+
+
+def _parse_text_math_segment(segment: str) -> Optional[tuple[str, bool]]:
+    """Parse a math delimiter segment into (latex, is_display), or None if not math."""
+    if segment.startswith(r"\["):
+        return segment[2:-2].strip(), True
+    if segment.startswith(r"\("):
+        return segment[2:-2].strip(), False
+    if segment.startswith("$$"):
+        return segment[2:-2].strip(), True
+    if segment.startswith("$") and segment.endswith("$") and len(segment) >= 2:
+        inner = segment[1:-1].strip()
+        if inner.startswith("\\$"):
+            return None
+        if not looks_like_latex(inner) and not re.search(r"[\\_{^=]", inner):
+            return None
+        return inner, False
+    return None
+
+
+def _convert_text_math_segments(
+    soup: BeautifulSoup,
+    text_node,
+    text_str: str,
+    to_markdown: bool,
+) -> None:
+    """Split a text node on math delimiters and replace with MathML or $ delimiters."""
+    matches = list(_TEXT_MATH_SEGMENT_RE.finditer(text_str))
+    if not matches:
+        return
+
+    new_nodes = []
+    last_end = 0
+    for match in matches:
+        if match.start() > last_end:
+            new_nodes.append(soup.new_string(text_str[last_end:match.start()]))
+
+        segment = match.group(0)
+        parsed = _parse_text_math_segment(segment)
+        if not parsed:
+            new_nodes.append(soup.new_string(segment))
+        else:
+            latex, is_display = parsed
+            if to_markdown:
+                math_text = f" $${latex}$$ " if is_display else f" ${latex}$ "
+                new_nodes.append(soup.new_string(math_text))
+            else:
+                math_soup = convert_latex_to_mathml(latex, "block" if is_display else "inline")
+                new_math = math_soup.find("math")
+                if new_math:
+                    new_nodes.append(new_math)
+                else:
+                    fallback = soup.new_tag("span", attrs={"class": "math-fallback"})
+                    fallback["data-latex"] = latex
+                    fallback.string = f" $${latex}$$ " if is_display else f" ${latex}$ "
+                    new_nodes.append(fallback)
+        last_end = match.end()
+
+    if last_end < len(text_str):
+        new_nodes.append(soup.new_string(text_str[last_end:]))
+
+    for node in new_nodes:
+        text_node.insert_before(node)
+    text_node.decompose()
 
 
 def _replace_latex_node(
@@ -638,23 +1032,35 @@ def _replace_latex_node(
 
 def convert_latex_to_mathml(latex_code: str, display: str = "inline") -> BeautifulSoup:
     """Converts LaTeX formula string to namespaced MathML BeautifulSoup structure."""
-    latex_code = normalize_marker_latex(latex_code)
-    try:
-        mathml_str = latex2mathml.converter.convert(latex_code)
-        math_soup = BeautifulSoup(mathml_str, "xml")
-        math_tag = math_soup.find("math")
-        if math_tag:
-            math_tag["display"] = display
-            math_tag["xmlns"] = "http://www.w3.org/1998/Math/MathML"
-        return math_soup
-    except Exception as e:
-        logger.error(f"Failed to convert LaTeX to MathML: {e}")
-        safe = html.escape(latex_code, quote=True)
-        fallback = BeautifulSoup(
-            f'<span class="math-fallback" data-latex="{safe}">{html.escape(latex_code)}</span>',
-            "xml",
-        )
-        return fallback
+    candidates = []
+    repaired = repair_marker_latex(latex_code)
+    sanitized = sanitize_latex_for_conversion(latex_code)
+    for candidate in (repaired, sanitized):
+        if candidate and candidate not in candidates:
+            candidates.append(candidate)
+
+    last_error: Optional[Exception] = None
+    for candidate in candidates:
+        try:
+            mathml_str = latex2mathml.converter.convert(candidate)
+            math_soup = BeautifulSoup(mathml_str, "xml")
+            math_tag = math_soup.find("math")
+            if math_tag:
+                math_tag["display"] = display
+                math_tag["xmlns"] = "http://www.w3.org/1998/Math/MathML"
+                return math_soup
+        except Exception as e:
+            last_error = e
+            logger.debug(f"LaTeX conversion attempt failed for {candidate!r}: {e}")
+
+    logger.error(f"Failed to convert LaTeX to MathML after {len(candidates)} attempts: {last_error}")
+    safe = html.escape(sanitized or normalized, quote=True)
+    fallback_body = html.escape(sanitized or normalized)
+    fallback = BeautifulSoup(
+        f'<span class="math-fallback" data-latex="{safe}">{fallback_body}</span>',
+        "xml",
+    )
+    return fallback
 
 
 def convert_mathml_to_latex(mathml_tag) -> str:
@@ -707,7 +1113,15 @@ def preprocess_formulas(soup: BeautifulSoup, to_markdown: bool = False) -> None:
                 fallback_span.string = f" $${latex_code}$$ "
                 el.replace_with(fallback_span)
 
-    # 0.1 Convert formula images (class-based or LaTeX in alt text from marker-pdf)
+    # 0.05 Retry math-fallback spans that still carry recoverable LaTeX
+    for el in list(soup.find_all(class_="math-fallback")):
+        latex_code = (el.get("data-latex") or el.get_text() or "").strip()
+        if not latex_code:
+            continue
+        is_display = is_display_latex(latex_code)
+        _replace_latex_node(soup, el, latex_code, is_display, to_markdown)
+
+    # 0.1 Convert formula images (class-based or LaTeX in alt/title from marker-pdf)
     for img in list(soup.find_all("img")):
         classes = img.get("class", [])
         if isinstance(classes, str):
@@ -717,7 +1131,7 @@ def preprocess_formulas(soup: BeautifulSoup, to_markdown: bool = False) -> None:
         is_display = False
 
         if any("formula" in c for c in classes) or any("katex" in c for c in classes) or any("math" in c for c in classes):
-            latex_code = img.get("source") or img.get("alt")
+            latex_code = extract_latex_from_image_attrs(img) or img.get("source") or img.get("alt")
             if latex_code:
                 latex_code = latex_code.strip()
                 is_display = "inline" not in classes
@@ -728,10 +1142,9 @@ def preprocess_formulas(soup: BeautifulSoup, to_markdown: bool = False) -> None:
                     latex_code = latex_code[1:-1].strip()
                     is_display = False
         else:
-            alt = (img.get("alt") or "").strip()
-            if looks_like_latex(alt):
-                latex_code = alt
-                is_display = is_display_latex(alt)
+            latex_code = extract_latex_from_image_attrs(img)
+            if latex_code:
+                is_display = is_display_latex(latex_code)
 
         if latex_code:
             _replace_latex_node(soup, img, latex_code, is_display, to_markdown)
@@ -810,56 +1223,26 @@ def preprocess_formulas(soup: BeautifulSoup, to_markdown: bool = False) -> None:
             else:
                 math_tag["display"] = "inline"
 
-    # 4. Process text nodes containing \( ... \), \[ ... \], $$ ... $$
+    # 4. Process text nodes containing \( \), \[ \], $$ $$, and inline $...$
     for text_node in list(soup.find_all(string=True)):
         parent = text_node.parent
-        if parent and parent.name in ("script", "style", "code", "pre", "math") or (parent and parent.get("class") and any("katex" in c for c in parent.get("class"))):
+        if parent and parent.name in ("script", "style", "code", "pre", "math"):
             continue
-            
+        if parent and parent.get("class") and any(
+            c in ("katex", "math-inline", "math-block", "math-fallback")
+            for c in parent.get("class", [])
+        ):
+            continue
+
         text_str = str(text_node)
         if not text_str.strip():
             continue
-            
-        pattern = re.compile(r'(\\\[.*?\\\]|\\\(.*?\\\)|\$\$.*?\$\$)')
-        parts = pattern.split(text_str)
-        if len(parts) > 1:
-            new_nodes = []
-            for part in parts:
-                if part.startswith(r'\['):
-                    latex = part[2:-2].strip()
-                    if to_markdown:
-                        new_nodes.append(soup.new_string(f" $${latex}$$ "))
-                    else:
-                        math_soup = convert_latex_to_mathml(latex, "block")
-                        new_math = math_soup.find("math")
-                        new_nodes.append(new_math if new_math else soup.new_string(part))
-                elif part.startswith(r'\('):
-                    latex = part[2:-2].strip()
-                    if to_markdown:
-                        new_nodes.append(soup.new_string(f" ${latex}$ "))
-                    else:
-                        math_soup = convert_latex_to_mathml(latex, "inline")
-                        new_math = math_soup.find("math")
-                        new_nodes.append(new_math if new_math else soup.new_string(part))
-                elif part.startswith('$$'):
-                    latex = part[2:-2].strip()
-                    if to_markdown:
-                        new_nodes.append(soup.new_string(f" $${latex}$$ "))
-                    else:
-                        math_soup = convert_latex_to_mathml(latex, "block")
-                        new_math = math_soup.find("math")
-                        new_nodes.append(new_math if new_math else soup.new_string(part))
-                else:
-                    new_nodes.append(soup.new_string(part))
-            
-            for node in new_nodes:
-                text_node.insert_before(node)
-            text_node.decompose()
+
+        _convert_text_math_segments(soup, text_node, text_str, to_markdown)
 
 
 def is_formula_img(img) -> bool:
-    alt = (img.get("alt") or "").strip()
-    if looks_like_latex(alt):
+    if extract_latex_from_image_attrs(img):
         return True
 
     keywords = ['math', 'tex', 'eq', 'formula', 'katex']
@@ -906,7 +1289,18 @@ def infer_image_role_from_tag(img) -> str:
     
     combined = (classes + " " + img_id + " " + src + " " + alt).lower()
     
-    if any(k in combined for k in ["formula", "math", "tex", "katex", "equation"]):
+    if any(
+        k in combined
+        for k in [
+            "formula-inline",
+            "formula-display",
+            "formula",
+            "math",
+            "tex",
+            "katex",
+            "equation",
+        ]
+    ):
         return "formula"
     if any(k in combined for k in ["chart", "plot", "graph", "diagram", "figure"]):
         return "chart"
@@ -1001,11 +1395,27 @@ def remove_or_preserve_svg(soup: BeautifulSoup) -> None:
 def validate_and_normalize_math(md_content: str) -> str:
     """
     Validate and normalize mathematical formulas to be standard Pandoc markdown compliant.
-    Converts \\(...\\)/\\[...\\] delimiters, recovers formula image refs, and strips \\inline.
+    Recovers formula images, converts TeX delimiters, and repairs marker LaTeX artifacts.
     """
-    content, _ = recover_formula_images_in_markdown(md_content)
-    content = re.sub(r'\\\[(.*?)\\\]', r'$$\1$$', content, flags=re.DOTALL)
-    content = re.sub(r'\\\((.*?)\\\)', r'$\1$', content, flags=re.DOTALL)
+    content, code_placeholders = _protect_code_regions(md_content)
+    content, _ = recover_formula_images_in_markdown(content)
+    content = re.sub(r"\\\[(.*?)\\\]", r"$$\1$$", content, flags=re.DOTALL)
+    content = re.sub(r"\\\((.*?)\\\)", r"$\1$", content, flags=re.DOTALL)
+    content = repair_math_delimiters_in_markdown(content)
+    content = _restore_code_regions(content, code_placeholders)
+    return content
+
+
+def normalize_pdf_markdown(md_content: str) -> str:
+    """
+    Full PDF markdown post-processing for faithful formula transcription.
+
+    Intended to run after marker-pdf conversion and image-reference embedding.
+    """
+    content = strip_marker_html_artifacts(md_content)
+    content = collapse_split_display_math(content)
+    content = validate_and_normalize_math(content)
+    content = remove_unused_img_ref_definitions(content)
     return content
 
 

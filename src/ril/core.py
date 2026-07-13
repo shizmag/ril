@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 # Initialize DB on load
 db.init_db()
 
-EXPORT_PIPELINE_VERSION = "2026-07-pdf-formula-fidelity-1"
+EXPORT_PIPELINE_VERSION = "2026-07-pdf-formula-fidelity-4"
 
 
 def sanitize_filename(title: str) -> str:
@@ -244,9 +244,6 @@ async def process_url(
         pdf_markdown = ""
         images: dict = {}
         try:
-            import base64
-            import io
-
             pdf_markdown, pdf_title, images, marker_meta = convert_pdf_with_marker(
                 temp_pdf_path, force_ocr=force_ocr
             )
@@ -261,78 +258,26 @@ async def process_url(
                     else:
                         pdf_title = "PDF Document"
 
-            from ril.converters import recover_formula_images_in_markdown, validate_and_normalize_math
+            from ril.converters import (
+                embed_pdf_images_in_markdown,
+                normalize_pdf_markdown,
+                recover_formula_images_in_markdown,
+            )
 
+            # Recover direct-path formula images before base64 embedding to avoid bloat.
             pdf_markdown, _recovered_refs = recover_formula_images_in_markdown(pdf_markdown)
+            image_roles: dict = {}
 
             if images and not config.DISABLE_IMAGES:
-                image_refs = {}
-                matched_image_keys = set()
-                for idx, (img_name, img_obj) in enumerate(images.items()):
-                    ref_id = f"img_ref_{idx}"
-                    buffered = io.BytesIO()
-                    img_format = img_obj.format if img_obj.format else "JPEG"
-                    if img_obj.mode != "RGB" and img_format in ("JPEG", "JPG"):
-                        img_obj = img_obj.convert("RGB")
-                    try:
-                        from PIL import ImageFile
-                        ImageFile.LOAD_TRUNCATED_IMAGES = True
-                        img_obj.load()
-                        img_obj.save(buffered, format=img_format)
-                    except Exception as save_err:
-                        logger.warning(f"Failed to save image {img_name} as {img_format}: {save_err}. Falling back to PNG.")
-                        buffered = io.BytesIO()
-                        img_format = "PNG"
-                        try:
-                            if img_obj.mode not in ("RGB", "RGBA"):
-                                img_obj = img_obj.convert("RGBA" if "transparency" in img_obj.info or img_obj.mode == "P" else "RGB")
-                            img_obj.save(buffered, format="PNG")
-                        except Exception as png_err:
-                            logger.error(f"Failed to save image {img_name} as PNG fallback: {png_err}")
-                            continue
-
-                    img_b64 = base64.b64encode(buffered.getvalue()).decode("utf-8")
-                    mime_type = f"image/{img_format.lower()}"
-                    if mime_type == "image/jpg":
-                        mime_type = "image/jpeg"
-                    b64_uri = f"data:{mime_type};base64,{img_b64}"
-                    image_refs[ref_id] = b64_uri
-
-                    candidate_names = [img_name]
-                    basename = Path(img_name).name
-                    if basename != img_name:
-                        candidate_names.append(basename)
-
-                    for candidate in candidate_names:
-                        escaped_name = re.escape(candidate)
-                        if candidate == img_name:
-                            pattern = rf'!\[(.*?)\]\({escaped_name}\)'
-                        else:
-                            # Basename fallback: markdown may use a subdir prefix
-                            pattern = (
-                                rf'!\[(.*?)\]\((?:{escaped_name}|[^)]*/{escaped_name})\)'
-                            )
-                        pdf_markdown, replacements = re.subn(
-                            pattern,
-                            rf'![\1][{ref_id}]',
-                            pdf_markdown,
-                        )
-                        if replacements:
-                            matched_image_keys.add(img_name)
-                            break
-
-                for unmatched_key in set(images.keys()) - matched_image_keys:
-                    logger.warning(f"PDF image key not matched in markdown: {unmatched_key}")
-
-                pdf_markdown += "\n\n"
-                for ref_id, b64_uri in image_refs.items():
-                    pdf_markdown += f"[{ref_id}]: {b64_uri}\n"
+                pdf_markdown, image_roles = embed_pdf_images_in_markdown(
+                    pdf_markdown, images
+                )
             else:
                 # Strip all markdown image tags
                 pdf_markdown = re.sub(r'!\[.*?\]\(.*?\)', '', pdf_markdown)
                 pdf_markdown = re.sub(r'!\[.*?\]\[.*?\]', '', pdf_markdown)
 
-            pdf_markdown = validate_and_normalize_math(pdf_markdown)
+            pdf_markdown = normalize_pdf_markdown(pdf_markdown)
 
         except Exception as e:
             logger.error(f"Error converting PDF via marker-pdf: {e}")
@@ -375,6 +320,8 @@ async def process_url(
             "marker_subject": marker_meta.get("marker_subject"),
             "imported_at": datetime.datetime.now().isoformat(),
         }
+        if image_roles:
+            sidecar_data["image_roles"] = image_roles
         try:
             with open(sidecar_path, "w", encoding="utf-8") as mf:
                 json.dump(sidecar_data, mf, ensure_ascii=False, indent=2)
@@ -413,7 +360,7 @@ async def process_url(
         
         logger.info(f"Successfully saved PDF article: {pdf_title} (ID: {article_id})")
 
-        from ril.converters import EPUBConverter
+        from ril.converters import EPUBConverter, HTMLConverter
 
         result = {
             "id": article_id,
@@ -425,10 +372,15 @@ async def process_url(
             "status": "unread"
         }
 
-        if isinstance(converter, EPUBConverter):
-            export_res = await export_article(article_id, "epub", force=True)
+        export_by_converter = {
+            EPUBConverter: "epub",
+            HTMLConverter: "html",
+        }
+        export_fmt = export_by_converter.get(type(converter))
+        if export_fmt:
+            export_res = await export_article(article_id, export_fmt, force=True)
             result["file_path"] = export_res["file_path"]
-            result["export_format"] = "epub"
+            result["export_format"] = export_fmt
 
         return result
     else:
@@ -880,21 +832,44 @@ async def export_article(article_id: int, export_format: str, force: bool = Fals
     html_content = ""
     base_url = article["url"]
     article_slug = original_file_path.stem
-    
-    if clean_html_path.exists():
+
+    def _regenerate_html_from_markdown() -> str:
+        from ril.converters import normalize_pdf_markdown
+
+        md_content = ""
+        if original_file_path.exists():
+            with open(original_file_path, "r", encoding="utf-8", errors="ignore") as f:
+                md_content = f.read()
+        md_content = normalize_pdf_markdown(md_content)
+        regenerated = md_to_html_fallback(md_content, article["title"])
+        try:
+            with open(clean_html_path, "w", encoding="utf-8") as f:
+                f.write(regenerated)
+        except Exception as e:
+            logger.error(f"Failed to refresh html cache {clean_html_path}: {e}")
+        return regenerated
+
+    html_cache_stale = False
+    if original_file_path.suffix == ".md":
+        try:
+            if original_file_path.exists():
+                md_mtime = original_file_path.stat().st_mtime
+                if not clean_html_path.exists():
+                    html_cache_stale = True
+                elif clean_html_path.exists():
+                    html_cache_stale = clean_html_path.stat().st_mtime < md_mtime
+        except OSError:
+            html_cache_stale = False
+
+    if html_cache_stale and original_file_path.suffix == ".md" and original_file_path.exists():
+        html_content = _regenerate_html_from_markdown()
+    elif clean_html_path.exists():
         with open(clean_html_path, "r", encoding="utf-8") as f:
             html_content = f.read()
     else:
         # Fallback for old files or PDFs
         if original_file_path.suffix == ".md":
-            from ril.converters import validate_and_normalize_math
-
-            md_content = ""
-            if original_file_path.exists():
-                with open(original_file_path, "r", encoding="utf-8", errors="ignore") as f:
-                    md_content = f.read()
-            md_content = validate_and_normalize_math(md_content)
-            html_content = md_to_html_fallback(md_content, article["title"])
+            html_content = _regenerate_html_from_markdown()
         elif original_file_path.suffix == ".html":
             if original_file_path.exists():
                 with open(original_file_path, "r", encoding="utf-8", errors="ignore") as f:
@@ -941,9 +916,16 @@ async def export_article(article_id: int, export_format: str, force: bool = Fals
         with open(target_file_path, "w", encoding="utf-8") as f:
             f.write(content)
     elif fmt == "markdown":
-        from ril.converters import MarkdownConverter
-        converter = MarkdownConverter()
-        content = await converter.convert(html_content, base_url, article_slug)
+        if original_file_path.suffix == ".md" and original_file_path.exists():
+            from ril.converters import normalize_pdf_markdown
+
+            with open(original_file_path, "r", encoding="utf-8", errors="ignore") as f:
+                content = normalize_pdf_markdown(f.read())
+        else:
+            from ril.converters import MarkdownConverter
+
+            converter = MarkdownConverter()
+            content = await converter.convert(html_content, base_url, article_slug)
         with open(target_file_path, "w", encoding="utf-8") as f:
             f.write(content)
     else:

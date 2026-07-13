@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from ril import core, db
-from ril.converters import EPUBConverter, MarkdownConverter, validate_epub_structure
+from ril.converters import EPUBConverter, HTMLConverter, MarkdownConverter, validate_epub_structure
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures" / "marker_outputs"
 FIXTURE_FILES = sorted(FIXTURES_DIR.glob("*.md"))
@@ -45,6 +45,37 @@ async def test_pdf_import_with_epub_format_writes_epub(monkeypatch, setup_test_e
 
     warnings = validate_epub_structure(epub_path.read_bytes())
     assert warnings == []
+
+
+@pytest.mark.asyncio
+async def test_pdf_import_with_html_format_writes_html(monkeypatch, setup_test_environment, mocker):
+    library_dir = setup_test_environment["library_dir"]
+    fake_pdf = library_dir / "html_format.pdf"
+    fake_pdf.write_bytes(b"%PDF-1.4 fake")
+
+    mocker.patch("ril.core.detect_pdf_url_or_content", new_callable=AsyncMock, return_value=True)
+    mocker.patch("ril.core.download_pdf", return_value=fake_pdf)
+    mocker.patch("ril.core.is_pdf_file", return_value=True)
+    mocker.patch(
+        "ril.core.convert_pdf_with_marker",
+        return_value=(
+            "# HTML Export\n\nInline $\\alpha$ math.",
+            "HTML Export",
+            {},
+            {},
+        ),
+    )
+
+    result = await core.process_url(
+        "https://example.com/html_format.pdf",
+        converter=HTMLConverter(),
+        force=True,
+    )
+
+    html_path = Path(result["file_path"])
+    assert html_path.suffix == ".html"
+    assert html_path.exists()
+    assert "<html" in html_path.read_text(encoding="utf-8").lower()
 
 
 @pytest.mark.asyncio
