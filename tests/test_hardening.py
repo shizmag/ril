@@ -107,7 +107,7 @@ async def test_pdf_download_magic_bytes_wins(mocker, setup_test_environment):
     mocker.patch("ril.core.fetch_html", side_effect=Exception("Download is starting"))
     
     # Mock convert_pdf_with_marker
-    mock_marker = mocker.patch("ril.core.convert_pdf_with_marker", return_value=("# PDF content", "PDF Title", {}))
+    mock_marker = mocker.patch("ril.core.convert_pdf_with_marker", return_value=("# PDF content", "PDF Title", {}, {}))
     
     res = await core.process_url(url)
     assert res["title"] == "PDF Title"
@@ -208,11 +208,69 @@ def test_math_placeholders_do_not_modify_inline_code():
     assert "MATH" not in html
 
 
+FIXTURES_DIR = Path(__file__).parent / "fixtures" / "marker_outputs"
+
+
+def test_md_to_html_fallback_figures_and_captions_fixture():
+    md = (FIXTURES_DIR / "figures_and_captions.md").read_text(encoding="utf-8")
+    html = core.md_to_html_fallback(md, "Neural Architecture Figures")
+    soup = BeautifulSoup(html, "html.parser")
+
+    assert 'alt="Figure 1"' in html
+    assert 'alt="Figure 2"' in html
+    assert 'alt="Figure 3"' in html
+
+    figures = soup.find_all("figure")
+    assert len(figures) == 3
+    assert all(fig.find("img") is not None for fig in figures)
+    assert all(fig.find("figcaption") is not None for fig in figures)
+    assert "Figure 1:" in figures[0].find("figcaption").get_text()
+    assert "Figure 2:" in figures[1].find("figcaption").get_text()
+    assert "Figure 3:" in figures[2].find("figcaption").get_text()
+
+    inline_heading = soup.find("h2", id="inline-reference-without-caption")
+    inline_paragraph = inline_heading.find_next_sibling("p")
+    assert inline_paragraph.find("img") is not None
+    assert inline_paragraph.find_parent("figure") is None
+
+
 def test_math_placeholders_still_preserve_real_math():
     md = "Normal math: $x^2 + y^2$. Display math: $$e = mc^2$$."
     html = core.md_to_html_fallback(md, "Title")
-    assert "$x^2 + y^2$" in html
-    assert "$$e = mc^2$$" in html
+    assert 'class="math-inline"' in html
+    assert 'data-latex="x^2 + y^2"' in html
+    assert 'class="math-block"' in html
+    assert 'data-latex="e = mc^2"' in html
+    assert "$x^2 + y^2$" not in html
+    assert "$$e = mc^2$$" not in html
+
+
+@pytest.mark.asyncio
+async def test_export_md_math_normalizes_and_converts_to_mathml(setup_test_environment):
+    md = "Inline: \\(E=mc^2\\) and block: \\[a^2 + b^2 = c^2\\]"
+    library_dir = setup_test_environment["library_dir"]
+    file_path = library_dir / "math_bridge_test.md"
+    file_path.write_text(md, encoding="utf-8")
+
+    article_id = db.add_article(
+        url="https://example.com/math-bridge",
+        title="Math Bridge",
+        file_path=str(file_path),
+        word_count=6,
+        char_count=50,
+        content="Math Bridge content"
+    )
+
+    res = await core.export_article(article_id, "epub", force=True)
+    epub_path = Path(res["file_path"])
+    assert epub_path.exists()
+
+    with zipfile.ZipFile(epub_path, "r") as z:
+        article_xhtml = z.read("OEBPS/article.xhtml").decode("utf-8")
+        assert "xmlns=\"http://www.w3.org/1998/Math/MathML\"" in article_xhtml
+        assert "<math" in article_xhtml
+        assert "math-inline" not in article_xhtml
+        assert "math-block" not in article_xhtml
 
 
 def test_preprocess_html_sanitizes_meaningful_svg():
@@ -371,6 +429,49 @@ async def test_export_article_stale_meta_rebuilds(setup_test_environment):
         assert Path(res["file_path"]).read_bytes() == b"regenerated stale epub"
     finally:
         EPUBConverter.convert = original_convert
+
+
+@pytest.mark.asyncio
+async def test_export_article_epub_metadata_from_sidecar(setup_test_environment):
+    """EPUB export should use article DB date/title and sidecar author in content.opf."""
+    import json
+    import zipfile
+    library_dir = setup_test_environment["library_dir"]
+
+    file_path = library_dir / "meta_export.md"
+    file_path.write_text("# Article Title\n\nТекст статьи на русском.", encoding="utf-8")
+    sidecar_path = file_path.with_suffix(".meta.json")
+    sidecar_path.write_text(
+        json.dumps({
+            "marker_title": "PDF Marker Title",
+            "marker_author": "Иван Автор",
+            "marker_subject": "Science",
+            "imported_at": "2025-01-10T12:00:00",
+        }),
+        encoding="utf-8",
+    )
+
+    article_id = db.add_article(
+        url="https://example.com/meta-export",
+        title="Article Title",
+        file_path=str(file_path),
+        word_count=5,
+        char_count=30,
+        content="Текст статьи",
+    )
+    article = db.get_article(article_id)
+    added_date = article["added_at"][:10]
+
+    res = await core.export_article(article_id, "epub", force=True)
+    epub_path = Path(res["file_path"])
+    assert epub_path.exists()
+
+    with zipfile.ZipFile(epub_path, "r") as z:
+        content_opf = z.read("OEBPS/content.opf").decode("utf-8")
+        assert "<dc:title>Article Title</dc:title>" in content_opf
+        assert f"<dc:date>{added_date}</dc:date>" in content_opf
+        assert "<dc:language>ru</dc:language>" in content_opf
+        assert "<dc:creator>Иван Автор</dc:creator>" in content_opf
 
 
 def test_delete_article_removes_export_meta_sidecars(setup_test_environment):

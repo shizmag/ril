@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 # Initialize DB on load
 db.init_db()
 
-EXPORT_PIPELINE_VERSION = "2026-07-quickfix-1"
+EXPORT_PIPELINE_VERSION = "2026-07-epub-fidelity-1"
 
 
 def sanitize_filename(title: str) -> str:
@@ -113,8 +113,9 @@ def convert_pdf_with_marker(pdf_path: Path, force_ocr: bool = False) -> tuple:
     Convert a local PDF file to Markdown using marker-pdf.
 
     Returns:
-        (markdown: str, title: str | None, images: dict)
-        where images maps image filename -> PIL.Image object.
+        (markdown: str, title: str | None, images: dict, marker_meta: dict)
+        where images maps image filename -> PIL.Image object and marker_meta
+        holds PDF document metadata fields from marker (title, author, subject).
 
     This is a standalone function so it can be monkey-patched in tests
     without loading any ML models.
@@ -147,10 +148,16 @@ def convert_pdf_with_marker(pdf_path: Path, force_ocr: bool = False) -> tuple:
     pdf_markdown, _ext, images = text_from_rendered(rendered)
 
     pdf_title: Optional[str] = None
+    marker_meta: Dict[str, Any] = {}
     if rendered.metadata and isinstance(rendered.metadata, dict):
         pdf_title = rendered.metadata.get("title") or None
+        marker_meta = {
+            "marker_title": rendered.metadata.get("title"),
+            "marker_author": rendered.metadata.get("author"),
+            "marker_subject": rendered.metadata.get("subject"),
+        }
 
-    return pdf_markdown, pdf_title, images or {}
+    return pdf_markdown, pdf_title, images or {}, marker_meta
 
 async def process_url(
     url: str,
@@ -240,7 +247,9 @@ async def process_url(
             import base64
             import io
 
-            pdf_markdown, pdf_title, images = convert_pdf_with_marker(temp_pdf_path, force_ocr=force_ocr)
+            pdf_markdown, pdf_title, images, marker_meta = convert_pdf_with_marker(
+                temp_pdf_path, force_ocr=force_ocr
+            )
 
             if not pdf_title:
                 if readability_title:
@@ -254,6 +263,7 @@ async def process_url(
 
             if images and not config.DISABLE_IMAGES:
                 image_refs = {}
+                matched_image_keys = set()
                 for idx, (img_name, img_obj) in enumerate(images.items()):
                     ref_id = f"img_ref_{idx}"
                     buffered = io.BytesIO()
@@ -284,12 +294,32 @@ async def process_url(
                     b64_uri = f"data:{mime_type};base64,{img_b64}"
                     image_refs[ref_id] = b64_uri
 
-                    escaped_name = re.escape(img_name)
-                    pdf_markdown = re.sub(
-                        rf'!\[(.*?)\]\({escaped_name}\)',
-                        rf'![\1][{ref_id}]',
-                        pdf_markdown
-                    )
+                    candidate_names = [img_name]
+                    basename = Path(img_name).name
+                    if basename != img_name:
+                        candidate_names.append(basename)
+
+                    for candidate in candidate_names:
+                        escaped_name = re.escape(candidate)
+                        if candidate == img_name:
+                            pattern = rf'!\[(.*?)\]\({escaped_name}\)'
+                        else:
+                            # Basename fallback: markdown may use a subdir prefix
+                            pattern = (
+                                rf'!\[(.*?)\]\((?:{escaped_name}|[^)]*/{escaped_name})\)'
+                            )
+                        pdf_markdown, replacements = re.subn(
+                            pattern,
+                            rf'![\1][{ref_id}]',
+                            pdf_markdown,
+                        )
+                        if replacements:
+                            matched_image_keys.add(img_name)
+                            break
+
+                for unmatched_key in set(images.keys()) - matched_image_keys:
+                    logger.warning(f"PDF image key not matched in markdown: {unmatched_key}")
+
                 pdf_markdown += "\n\n"
                 for ref_id, b64_uri in image_refs.items():
                     pdf_markdown += f"[{ref_id}]: {b64_uri}\n"
@@ -321,6 +351,33 @@ async def process_url(
         (config.LIBRARY_DIR / "images").mkdir(parents=True, exist_ok=True)
         with open(file_path, "w", encoding="utf-8") as f:
             f.write(pdf_markdown)
+
+        if config.CACHE_PDF_HTML:
+            try:
+                from ril.converters import validate_and_normalize_math
+
+                clean_html_path = file_path.with_suffix(".html_clean")
+                normalized_md = validate_and_normalize_math(pdf_markdown)
+                cached_html = md_to_html_fallback(normalized_md, pdf_title)
+                with open(clean_html_path, "w", encoding="utf-8") as f:
+                    f.write(cached_html)
+            except Exception as e:
+                logger.error(f"Failed to save PDF html cache: {e}")
+
+        # Save import sidecar metadata from marker-pdf
+        import json
+        sidecar_path = file_path.with_suffix(".meta.json")
+        sidecar_data = {
+            "marker_title": marker_meta.get("marker_title"),
+            "marker_author": marker_meta.get("marker_author"),
+            "marker_subject": marker_meta.get("marker_subject"),
+            "imported_at": datetime.datetime.now().isoformat(),
+        }
+        try:
+            with open(sidecar_path, "w", encoding="utf-8") as mf:
+                json.dump(sidecar_data, mf, ensure_ascii=False, indent=2)
+        except Exception as e:
+            logger.error(f"Failed to save PDF sidecar meta {sidecar_path}: {e}")
             
         # Save clean HTML source for future conversion/export if it came from web page
         if clean_html:
@@ -457,7 +514,7 @@ def delete_article(article_id: int) -> bool:
             file_path.unlink()
             logger.info(f"Deleted file: {file_path}")
             
-        for ext in [".epub", ".html", ".md", ".epub.meta.json", ".html.meta.json", ".md.meta.json", ".html_clean"]:
+        for ext in [".epub", ".html", ".md", ".meta.json", ".epub.meta.json", ".html.meta.json", ".md.meta.json", ".html_clean"]:
             sibling = file_path.with_suffix(ext)
             if sibling.exists():
                 sibling.unlink()
@@ -526,6 +583,94 @@ def reset_library() -> None:
     except Exception as e:
         logger.error(f"Error resetting files: {e}")
 
+_FIGURE_CAPTION_RE = re.compile(r"^Figure\s+\d+\s*:", re.IGNORECASE)
+_FIGURE_BLOCK_HTML_RE = re.compile(
+    r"<p>\s*(<img\b[^>]*>)\s*</p>\s*<p>\s*<em>(Figure\s+\d+\s*:[^<]*)</em>\s*</p>",
+    re.IGNORECASE,
+)
+
+
+def wrap_figures_with_captions(soup) -> None:
+    """
+    Wrap block images followed by italic *Figure N:* captions into semantic figure/figcaption.
+    Inline images inside paragraphs with surrounding text are left unchanged.
+    """
+    from bs4 import NavigableString
+
+    root = soup.body if soup.body else soup
+
+    def _paragraph_image_only(paragraph):
+        imgs = paragraph.find_all("img", recursive=False)
+        if len(imgs) != 1:
+            return None
+        img = imgs[0]
+        for child in paragraph.children:
+            if child is img:
+                continue
+            if isinstance(child, NavigableString):
+                if child.strip():
+                    return None
+            else:
+                return None
+        return img
+
+    def _figure_caption_text(paragraph):
+        em_tags = paragraph.find_all("em", recursive=False)
+        if len(em_tags) != 1:
+            return None
+        em = em_tags[0]
+        for child in paragraph.children:
+            if child is em:
+                continue
+            if isinstance(child, NavigableString):
+                if child.strip():
+                    return None
+            else:
+                return None
+        caption = em.get_text(strip=True)
+        if _FIGURE_CAPTION_RE.match(caption):
+            return caption
+        return None
+
+    for paragraph in list(root.find_all("p")):
+        if paragraph.parent and paragraph.parent.name == "figure":
+            continue
+
+        img = _paragraph_image_only(paragraph)
+        if img is None:
+            continue
+
+        next_sibling = paragraph.find_next_sibling()
+        if not next_sibling or next_sibling.name != "p":
+            continue
+
+        caption = _figure_caption_text(next_sibling)
+        if not caption:
+            continue
+
+        figure = soup.new_tag("figure")
+        img.extract()
+        figure.append(img)
+
+        figcaption = soup.new_tag("figcaption")
+        figcaption.string = caption
+        figure.append(figcaption)
+
+        paragraph.replace_with(figure)
+        next_sibling.decompose()
+
+
+def _wrap_figures_in_html(html_out: str) -> str:
+    """Regex-based figure wrapping to avoid re-serializing unrelated HTML nodes."""
+
+    def _repl(match: re.Match) -> str:
+        img_tag = match.group(1)
+        caption = match.group(2)
+        return f"<figure>{img_tag}<figcaption>{caption}</figcaption></figure>"
+
+    return _FIGURE_BLOCK_HTML_RE.sub(_repl, html_out)
+
+
 def md_to_html_fallback(md_content: str, title: str) -> str:
     """
     Fallback markdown to HTML parser using python-markdown.
@@ -540,32 +685,40 @@ def md_to_html_fallback(md_content: str, title: str) -> str:
     placeholders = {}
     placeholder_count = 0
 
+    def _math_block_wrapper(latex: str) -> str:
+        safe_latex = _html.escape(latex.strip(), quote=True)
+        return f'<div class="math-block" data-latex="{safe_latex}"></div>'
+
+    def _math_inline_wrapper(latex: str) -> str:
+        safe_latex = _html.escape(latex.strip(), quote=True)
+        return f'<span class="math-inline" data-latex="{safe_latex}"></span>'
+
     def repl_block_bracket(match):
         nonlocal placeholder_count
         ph = f"MATHBLOCKPLACEHOLDER{placeholder_count}"
         placeholder_count += 1
-        placeholders[ph] = match.group(0)
+        placeholders[ph] = _math_block_wrapper(match.group(1))
         return ph
 
     def repl_block_double_dollar(match):
         nonlocal placeholder_count
         ph = f"MATHBLOCKPLACEHOLDER{placeholder_count}"
         placeholder_count += 1
-        placeholders[ph] = match.group(0)
+        placeholders[ph] = _math_block_wrapper(match.group(1))
         return ph
 
     def repl_inline_paren(match):
         nonlocal placeholder_count
         ph = f"MATHINLINEPLACEHOLDER{placeholder_count}"
         placeholder_count += 1
-        placeholders[ph] = match.group(0)
+        placeholders[ph] = _math_inline_wrapper(match.group(1))
         return ph
 
     def repl_inline_dollar(match):
         nonlocal placeholder_count
         ph = f"MATHINLINEPLACEHOLDER{placeholder_count}"
         placeholder_count += 1
-        placeholders[ph] = match.group(0)
+        placeholders[ph] = _math_inline_wrapper(match.group(1))
         return ph
 
     # Code protection logic
@@ -609,8 +762,48 @@ def md_to_html_fallback(md_content: str, title: str) -> str:
     for ph, orig in placeholders.items():
         html_out = html_out.replace(ph, orig)
 
+    html_out = _wrap_figures_in_html(html_out)
+
     safe_title = _html.escape(title)
     return f"<html><head><title>{safe_title}</title></head><body>{html_out}</body></html>"
+
+
+def _format_article_date(added_at: Optional[str]) -> str:
+    """Extract YYYY-MM-DD from article added_at ISO timestamp."""
+    if added_at and len(added_at) >= 10:
+        return added_at[:10]
+    return datetime.date.today().strftime("%Y-%m-%d")
+
+
+def build_epub_metadata(
+    article: Dict[str, Any],
+    html_content: str,
+    original_file_path: Path,
+) -> Dict[str, Any]:
+    """Build EPUB dc metadata from article DB row and optional import sidecar."""
+    import json
+    from ril.converters import detect_language
+
+    metadata: Dict[str, Any] = {
+        "title": article.get("title") or "Saved Article",
+        "date": _format_article_date(article.get("added_at")),
+        "creator": "Read It Later",
+    }
+
+    sidecar_path = original_file_path.with_suffix(".meta.json")
+    if sidecar_path.exists():
+        try:
+            with open(sidecar_path, "r", encoding="utf-8") as f:
+                sidecar = json.load(f)
+            if sidecar.get("marker_author"):
+                metadata["creator"] = sidecar["marker_author"]
+        except Exception as e:
+            logger.debug(f"Failed to read sidecar meta {sidecar_path}: {e}")
+
+    sample_text = f"{metadata.get('title', '')} {html_content[:5000]}"
+    metadata["language"] = detect_language(sample_text)
+    return metadata
+
 
 async def export_article(article_id: int, export_format: str, force: bool = False) -> Dict[str, Any]:
     article = db.get_article(article_id)
@@ -661,10 +854,13 @@ async def export_article(article_id: int, export_format: str, force: bool = Fals
     else:
         # Fallback for old files or PDFs
         if original_file_path.suffix == ".md":
+            from ril.converters import validate_and_normalize_math
+
             md_content = ""
             if original_file_path.exists():
                 with open(original_file_path, "r", encoding="utf-8", errors="ignore") as f:
                     md_content = f.read()
+            md_content = validate_and_normalize_math(md_content)
             html_content = md_to_html_fallback(md_content, article["title"])
         elif original_file_path.suffix == ".html":
             if original_file_path.exists():
@@ -690,9 +886,21 @@ async def export_article(article_id: int, export_format: str, force: bool = Fals
     if fmt == "epub":
         from ril.converters import EPUBConverter
         converter = EPUBConverter()
-        content = await converter.convert(html_content, base_url, article_slug)
+        epub_metadata = build_epub_metadata(article, html_content, original_file_path)
+        content = await converter.convert(
+            html_content, base_url, article_slug, metadata=epub_metadata
+        )
         with open(target_file_path, "wb") as f:
             f.write(content)
+        if config.RIL_EPUB_DEBUG:
+            from ril.converters import build_epub_debug_report
+
+            report_path = target_file_path.with_suffix(".epub.report.json")
+            try:
+                with open(report_path, "w", encoding="utf-8") as rf:
+                    json.dump(build_epub_debug_report(content), rf, indent=2)
+            except Exception as e:
+                logger.error(f"Failed to save EPUB debug report {report_path}: {e}")
     elif fmt == "html":
         from ril.converters import HTMLConverter
         converter = HTMLConverter()

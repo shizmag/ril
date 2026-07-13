@@ -73,7 +73,7 @@ async def test_pdf_process_url_still_uses_marker(mocker, setup_test_environment)
     mocker.patch("ril.core.is_pdf_file", return_value=True)
     
     # Mock convert_pdf_with_marker to ensure it IS called
-    mock_marker = mocker.patch("ril.core.convert_pdf_with_marker", return_value=("# Mock PDF Title\n\nContent.", "Mock PDF Title", {}))
+    mock_marker = mocker.patch("ril.core.convert_pdf_with_marker", return_value=("# Mock PDF Title\n\nContent.", "Mock PDF Title", {}, {}))
     
     # Mock Path exists/unlink/write_text
     mocker.patch("pathlib.Path.exists", return_value=True)
@@ -118,7 +118,7 @@ async def test_export_rebuilds_when_pipeline_version_changes(setup_test_environm
     # 3. Call export_article. Since version is stale, it should rebuild and regenerate the file.
     original_convert = EPUBConverter.convert
     
-    async def mock_convert(self, html_content, base_url, article_slug):
+    async def mock_convert(self, html_content, base_url, article_slug, metadata=None):
         return b"fresh epub data"
         
     EPUBConverter.convert = mock_convert

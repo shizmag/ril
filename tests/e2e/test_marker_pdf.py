@@ -34,7 +34,7 @@ def test_real_marker_pdf_conversion_simple(tmp_path):
     if not fixture_pdf.exists():
         pytest.skip("No fixture PDF found at tests/e2e/fixtures/sample.pdf")
 
-    markdown, title, images = convert_pdf_with_marker(fixture_pdf)
+    markdown, title, images, marker_meta = convert_pdf_with_marker(fixture_pdf)
 
     assert isinstance(markdown, str)
     assert len(markdown) > 0

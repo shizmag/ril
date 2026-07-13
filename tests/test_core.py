@@ -57,7 +57,7 @@ async def test_process_url_creates_directory_if_missing(mocker, setup_test_envir
     mock_page.pdf = AsyncMock()
     
     # Mock convert_pdf_with_marker
-    mocker.patch("ril.core.convert_pdf_with_marker", return_value=("# Test Missing Dir\n\nContent.", "Test Missing Dir", {}))
+    mocker.patch("ril.core.convert_pdf_with_marker", return_value=("# Test Missing Dir\n\nContent.", "Test Missing Dir", {}, {}))
     
     # Process url should recreate the directory and succeed
     result = await core.process_url("https://example.com/test-missing-dir", converter=MarkdownConverter())
@@ -90,7 +90,7 @@ async def test_process_url_pipeline(mocker, setup_test_environment):
     # Mock convert_pdf_with_marker
     mocker.patch(
         "ril.core.convert_pdf_with_marker",
-        return_value=("# Квантовые процессоры\n\nТекст статьи.", "Квантовые процессоры", {})
+        return_value=("# Квантовые процессоры\n\nТекст статьи.", "Квантовые процессоры", {}, {})
     )
     
     # Run the pipeline
@@ -196,6 +196,7 @@ async def test_process_url_pdf(mocker, setup_test_environment):
             "# Mock PDF Title\n\nSome text.\n\n![image-0.jpg](image-0.jpg)",
             "Mock PDF Title",
             {"image-0.jpg": mock_img},
+            {},
         ),
     )
 
@@ -239,6 +240,7 @@ async def test_process_url_pdf_disabled_images(mocker, monkeypatch, setup_test_e
             "# Mock PDF Title\n\nSome text.\n\n![image-0.jpg](image-0.jpg)",
             "Mock PDF Title",
             {"image-0.jpg": mock_img},
+            {},
         ),
     )
 
@@ -279,7 +281,7 @@ async def test_process_url_duplicate_check(mocker, setup_test_environment):
     mock_page.pdf = AsyncMock()
 
     # Mock convert_pdf_with_marker
-    mocker.patch("ril.core.convert_pdf_with_marker", return_value=("# Duplicate Title\n\nContent.", "Duplicate Title", {}))
+    mocker.patch("ril.core.convert_pdf_with_marker", return_value=("# Duplicate Title\n\nContent.", "Duplicate Title", {}, {}))
     
     # First time processing should succeed
     url = "https://example.com/duplicate-test"
@@ -318,7 +320,7 @@ async def test_process_url_routing_logic(mocker, setup_test_environment):
     mock_page.pdf = AsyncMock()
 
     # Mock convert_pdf_with_marker
-    mock_marker = mocker.patch("ril.core.convert_pdf_with_marker", return_value=("# Web Page Title\n\nContent.", "Web Page Title", {}))
+    mock_marker = mocker.patch("ril.core.convert_pdf_with_marker", return_value=("# Web Page Title\n\nContent.", "Web Page Title", {}, {}))
     
     from pathlib import Path
     mocker.patch("ril.core.download_pdf", lambda url: Path("/fake/path.pdf"))

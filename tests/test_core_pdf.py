@@ -19,11 +19,11 @@ from ril import db, config
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _fake_convert(path, markdown="# Fake Title\n\nBody text.", title="Fake Title", images=None):
+def _fake_convert(path, markdown="# Fake Title\n\nBody text.", title="Fake Title", images=None, marker_meta=None):
     """Factory returning a fake convert_pdf_with_marker that also asserts on the path."""
     def _impl(pdf_path, *args, **kwargs):
         assert pdf_path == path, f"Expected path {path}, got {pdf_path}"
-        return (markdown, title, images or {})
+        return (markdown, title, images or {}, marker_meta or {})
     return _impl
 
 
@@ -134,6 +134,16 @@ async def test_process_pdf_success_with_mock_marker(monkeypatch, setup_test_envi
     assert record is not None
     assert record["title"] == "Mock PDF Title"
 
+    # Import sidecar metadata saved alongside markdown
+    sidecar_path = file_path.with_suffix(".meta.json")
+    assert sidecar_path.exists()
+    import json
+    sidecar = json.loads(sidecar_path.read_text(encoding="utf-8"))
+    assert "imported_at" in sidecar
+    assert "marker_title" in sidecar
+    assert "marker_author" in sidecar
+    assert "marker_subject" in sidecar
+
 
 # ---------------------------------------------------------------------------
 # 4. Image stripping when DISABLE_IMAGES=True
@@ -155,7 +165,7 @@ async def test_process_pdf_strips_images_when_disabled(monkeypatch, setup_test_e
     monkeypatch.setattr(
         core,
         "convert_pdf_with_marker",
-        lambda p, *a, **kw: (md_with_image, "Title", images),
+        lambda p, *a, **kw: (md_with_image, "Title", images, {}),
     )
     monkeypatch.setattr(config, "DISABLE_IMAGES", True)
 
@@ -186,7 +196,7 @@ async def test_process_pdf_embeds_images_when_enabled(monkeypatch, setup_test_en
     monkeypatch.setattr(
         core,
         "convert_pdf_with_marker",
-        lambda p, *a, **kw: (md_with_image, "Title", images),
+        lambda p, *a, **kw: (md_with_image, "Title", images, {}),
     )
     monkeypatch.setattr(config, "DISABLE_IMAGES", False)
 
@@ -209,7 +219,7 @@ async def test_process_pdf_cleanup_on_success(monkeypatch, setup_test_environmen
     monkeypatch.setattr(
         core,
         "convert_pdf_with_marker",
-        lambda p, *a, **kw: ("# Title\n\nBody.", "Title", {}),
+        lambda p, *a, **kw: ("# Title\n\nBody.", "Title", {}, {}),
     )
 
     assert fake_pdf.exists()
@@ -259,7 +269,7 @@ async def test_process_pdf_duplicate_url_without_force(monkeypatch, setup_test_e
     monkeypatch.setattr(
         core,
         "convert_pdf_with_marker",
-        lambda p, *a, **kw: ("# Doc\n\nBody.", "Doc", {}),
+        lambda p, *a, **kw: ("# Doc\n\nBody.", "Doc", {}, {}),
     )
 
     url = "https://example.com/dup.pdf"
@@ -284,7 +294,7 @@ async def test_process_pdf_force_updates_existing(monkeypatch, setup_test_enviro
     monkeypatch.setattr(
         core,
         "convert_pdf_with_marker",
-        lambda p, *a, **kw: ("# Doc\n\nBody.", "Doc", {}),
+        lambda p, *a, **kw: ("# Doc\n\nBody.", "Doc", {}, {}),
     )
 
     url = "https://example.com/force.pdf"
@@ -294,7 +304,7 @@ async def test_process_pdf_force_updates_existing(monkeypatch, setup_test_enviro
     monkeypatch.setattr(
         core,
         "convert_pdf_with_marker",
-        lambda p, *a, **kw: ("# Updated Doc\n\nNew body.", "Updated Doc", {}),
+        lambda p, *a, **kw: ("# Updated Doc\n\nNew body.", "Updated Doc", {}, {}),
     )
     res2 = await core.process_url(url, force=True)
 
@@ -309,6 +319,95 @@ async def test_process_pdf_force_updates_existing(monkeypatch, setup_test_enviro
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
+async def test_process_pdf_image_basename_fallback(monkeypatch, setup_test_environment):
+    tmp_path = setup_test_environment["temp_dir"]
+    fake_pdf = tmp_path / "basename.pdf"
+    fake_pdf.write_bytes(b"%PDF-1.4 fake")
+
+    md_with_image = "# Title\n\n![Figure 1](figures/figure-0.jpg)"
+    from PIL import Image as PILImage
+    mock_img = PILImage.new("RGB", (50, 50), color="green")
+    images = {"/tmp/marker/output/figure-0.jpg": mock_img}
+
+    monkeypatch.setattr(core, "download_pdf", lambda url: fake_pdf)
+    monkeypatch.setattr(
+        core,
+        "convert_pdf_with_marker",
+        lambda p, *a, **kw: (md_with_image, "Title", images, {}),
+    )
+    monkeypatch.setattr(config, "DISABLE_IMAGES", False)
+
+    result = await core.process_url("https://example.com/basename.pdf")
+    content = Path(result["file_path"]).read_text(encoding="utf-8")
+
+    assert "![Figure 1][img_ref_0]" in content
+    assert "[img_ref_0]: data:image/" in content
+    assert "figures/figure-0.jpg" not in content
+
+
+@pytest.mark.asyncio
+async def test_process_pdf_logs_unmatched_image_keys(
+    monkeypatch, setup_test_environment, caplog
+):
+    tmp_path = setup_test_environment["temp_dir"]
+    fake_pdf = tmp_path / "unmatched.pdf"
+    fake_pdf.write_bytes(b"%PDF-1.4 fake")
+
+    md_without_images = "# Title\n\nBody text only."
+    from PIL import Image as PILImage
+    mock_img = PILImage.new("RGB", (50, 50), color="yellow")
+    images = {"orphan-figure.png": mock_img}
+
+    monkeypatch.setattr(core, "download_pdf", lambda url: fake_pdf)
+    monkeypatch.setattr(
+        core,
+        "convert_pdf_with_marker",
+        lambda p, *a, **kw: (md_without_images, "Title", images, {}),
+    )
+    monkeypatch.setattr(config, "DISABLE_IMAGES", False)
+
+    with caplog.at_level("WARNING"):
+        await core.process_url("https://example.com/unmatched.pdf")
+
+    assert any(
+        "PDF image key not matched in markdown: orphan-figure.png" in record.message
+        for record in caplog.records
+    )
+
+
+@pytest.mark.asyncio
+async def test_process_pdf_caches_html_when_enabled(monkeypatch, setup_test_environment):
+    tmp_path = setup_test_environment["temp_dir"]
+    fake_pdf = tmp_path / "cache.pdf"
+    fake_pdf.write_bytes(b"%PDF-1.4 fake")
+
+    md_content = "# Cached PDF\n\n![Figure 1](figure-0.png)"
+    from PIL import Image as PILImage
+    mock_img = PILImage.new("RGB", (50, 50), color="purple")
+    images = {"figure-0.png": mock_img}
+
+    monkeypatch.setattr(core, "download_pdf", lambda url: fake_pdf)
+    monkeypatch.setattr(
+        core,
+        "convert_pdf_with_marker",
+        lambda p, *a, **kw: (md_content, "Cached PDF", images, {}),
+    )
+    monkeypatch.setattr(config, "DISABLE_IMAGES", False)
+    monkeypatch.setattr(config, "CACHE_PDF_HTML", True)
+
+    result = await core.process_url("https://example.com/cache.pdf")
+    md_path = Path(result["file_path"])
+    html_path = md_path.with_suffix(".html_clean")
+
+    assert md_path.exists()
+    assert html_path.exists()
+    html = html_path.read_text(encoding="utf-8")
+    assert "<html>" in html
+    assert "<img" in html
+    assert 'alt="Figure 1"' in html
+
+
+@pytest.mark.asyncio
 async def test_process_pdf_title_fallback_from_url(monkeypatch, setup_test_environment, tmp_path):
     fake_pdf = tmp_path / "my_report.pdf"
     fake_pdf.write_bytes(b"%PDF-1.4 fake")
@@ -317,7 +416,7 @@ async def test_process_pdf_title_fallback_from_url(monkeypatch, setup_test_envir
     monkeypatch.setattr(
         core,
         "convert_pdf_with_marker",
-        lambda p, *a, **kw: ("# \n\nBody text.", None, {}),  # title=None
+        lambda p, *a, **kw: ("# \n\nBody text.", None, {}, {}),  # title=None
     )
 
     result = await core.process_url("https://example.com/my_report.pdf")

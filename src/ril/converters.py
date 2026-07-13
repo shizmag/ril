@@ -1,6 +1,8 @@
 import os
 import re
 import io
+import datetime
+import html
 import base64
 import hashlib
 import logging
@@ -8,8 +10,9 @@ import asyncio
 import zipfile
 import uuid
 import mimetypes
+import xml.etree.ElementTree as ET
 from abc import ABC, abstractmethod
-from typing import Optional, Tuple, Dict, Any
+from typing import Optional, Tuple, Dict, Any, List
 from urllib.parse import urljoin, urlparse, parse_qs, urlunparse, urlencode, unquote, quote
 from pathlib import Path
 import httpx
@@ -560,7 +563,40 @@ def preprocess_formulas(soup: BeautifulSoup, to_markdown: bool = False) -> None:
     - If to_markdown: converts them into Markdown delimiters $...$ and $$...$$.
     - If not to_markdown (EPUB): converts them into clean, namespaced MathML structures.
     """
-    # 0. Convert formula images (e.g. on Habr: <img class="formula inline" source="...">)
+    # 0. Convert semantic math wrappers emitted by md_to_html_fallback
+    for el in soup.find_all(class_=re.compile(r"\bmath-inline\b")):
+        latex_code = (el.get("data-latex") or "").strip()
+        if not latex_code:
+            continue
+        if to_markdown:
+            el.replace_with(soup.new_string(f" ${latex_code}$ "))
+        else:
+            math_soup = convert_latex_to_mathml(latex_code, "inline")
+            new_math = math_soup.find("math")
+            if new_math:
+                el.replace_with(new_math)
+            else:
+                fallback_span = soup.new_tag("span", attrs={"class": "math-fallback"})
+                fallback_span.string = f" ${latex_code}$ "
+                el.replace_with(fallback_span)
+
+    for el in soup.find_all(class_=re.compile(r"\bmath-block\b")):
+        latex_code = (el.get("data-latex") or "").strip()
+        if not latex_code:
+            continue
+        if to_markdown:
+            el.replace_with(soup.new_string(f" $${latex_code}$$ "))
+        else:
+            math_soup = convert_latex_to_mathml(latex_code, "block")
+            new_math = math_soup.find("math")
+            if new_math:
+                el.replace_with(new_math)
+            else:
+                fallback_span = soup.new_tag("span", attrs={"class": "math-fallback"})
+                fallback_span.string = f" $${latex_code}$$ "
+                el.replace_with(fallback_span)
+
+    # 0.1 Convert formula images (e.g. on Habr: <img class="formula inline" source="...">)
     for img in soup.find_all("img"):
         classes = img.get("class", [])
         if isinstance(classes, str):
@@ -1948,6 +1984,355 @@ class HTMLConverter(BaseConverter):
 """
 
 
+def _xml_escape_text(text: str) -> str:
+    """Escape plain text for safe inclusion in XHTML/XML text nodes and attributes."""
+    return html.escape(text, quote=False)
+
+
+def detect_language(text: str) -> str:
+    """
+    Heuristic language detection for EPUB metadata.
+    Cyrillic letter ratio above threshold -> ru, otherwise en.
+    """
+    if config.EPUB_LANGUAGE:
+        return config.EPUB_LANGUAGE
+    if not text:
+        return "en"
+    cyrillic = len(re.findall(r"[\u0400-\u04FF]", text))
+    latin = len(re.findall(r"[A-Za-z]", text))
+    letters = cyrillic + latin
+    if letters == 0:
+        return "en"
+    if cyrillic / letters >= 0.15:
+        return "ru"
+    return "en"
+
+
+def _serialize_xhtml_children(element) -> str:
+    """Serialize element children as an XHTML fragment with XML-safe escaping."""
+    from bs4 import NavigableString, Comment
+
+    parts = []
+    for child in element.children:
+        if isinstance(child, Comment):
+            continue
+        if isinstance(child, NavigableString):
+            parts.append(_xml_escape_text(str(child)))
+        else:
+            parts.append(child.decode(formatter="minimal"))
+    return "".join(parts)
+
+
+def _normalize_split_tag(split_at: str) -> str:
+    """Normalize chapter split tag to a supported heading level."""
+    split_at = (split_at or "h1").lower()
+    return split_at if split_at in ("h1", "h2") else "h1"
+
+
+def _find_headings_in_range(start_heading, end_heading, tag: str) -> List:
+    """Return headings of ``tag`` that appear after ``start_heading`` and before ``end_heading``."""
+    results = []
+    current = start_heading.next_element
+    while current and current is not end_heading:
+        if getattr(current, "name", None) == tag:
+            results.append(current)
+        current = current.next_element
+    return results
+
+
+def _assign_stable_heading_ids(soup: BeautifulSoup, toc_max_depth: int = 2) -> None:
+    """Assign stable id attributes to headings included in the EPUB table of contents."""
+    body = soup.body if soup.body else soup
+    toc_max_depth = max(1, min(int(toc_max_depth), 6))
+
+    h1_tags = body.find_all("h1")
+    for h1_index, h1 in enumerate(h1_tags, start=1):
+        if not h1.get("id"):
+            h1["id"] = f"ch-{h1_index}"
+
+        if toc_max_depth < 2:
+            continue
+
+        next_h1 = h1_tags[h1_index] if h1_index < len(h1_tags) else None
+        for h2_index, h2 in enumerate(_find_headings_in_range(h1, next_h1, "h2"), start=1):
+            if not h2.get("id"):
+                h2["id"] = f"ch-{h1_index}-sec-{h2_index}"
+
+            if toc_max_depth < 3:
+                continue
+
+            next_h2 = h2.find_all_next("h2")
+            next_h2 = next_h2[0] if next_h2 else None
+            if next_h2 and next_h1:
+                # Stop at whichever comes first in document order
+                if next_h2.find_next(lambda el: el is next_h1):
+                    boundary = next_h1
+                else:
+                    boundary = next_h2
+            elif next_h2:
+                boundary = next_h2
+            else:
+                boundary = next_h1
+
+            for h3_index, h3 in enumerate(_find_headings_in_range(h2, boundary, "h3"), start=1):
+                if not h3.get("id"):
+                    h3["id"] = f"ch-{h1_index}-sec-{h2_index}-{h3_index}"
+
+
+def _collect_nodes_until_next_split(heading, split_tag: str) -> List:
+    """Collect a heading and following siblings until the next split-level heading."""
+    nodes = [heading]
+    current = heading
+    while True:
+        next_sibling = current.next_sibling
+        if next_sibling is None:
+            break
+        if getattr(next_sibling, "name", None) == split_tag:
+            break
+        nodes.append(next_sibling)
+        current = next_sibling
+    return nodes
+
+
+def split_html_into_chapters(
+    soup: BeautifulSoup,
+    split_at: str = "h1",
+    toc_max_depth: int = 2,
+    assign_ids: bool = True,
+) -> List[Dict[str, Any]]:
+    """
+    Split HTML soup into chapters at ``split_at`` headings.
+
+    Returns a list of chapter dicts:
+    ``{title, anchor_id, html_fragment, level}``.
+    """
+    split_tag = _normalize_split_tag(split_at)
+    split_level = int(split_tag[1])
+    body = soup.body if soup.body else soup
+
+    if assign_ids:
+        _assign_stable_heading_ids(soup, toc_max_depth=toc_max_depth)
+
+    split_headings = body.find_all(split_tag)
+    if len(split_headings) <= 1:
+        if split_headings:
+            title = split_headings[0].get_text(strip=True) or "Saved Article"
+            anchor_id = split_headings[0].get("id", "ch-1")
+            level = split_level
+        else:
+            title = "Saved Article"
+            anchor_id = "ch-1"
+            level = 1
+
+        return [{
+            "title": title,
+            "anchor_id": anchor_id,
+            "html_fragment": _serialize_xhtml_children(body),
+            "level": level,
+        }]
+
+    chapters = []
+    for heading in split_headings:
+        fragment_soup = BeautifulSoup("<body></body>", "lxml")
+        fragment_body = fragment_soup.body
+
+        nodes_to_move = _collect_nodes_until_next_split(heading, split_tag)
+        if heading is split_headings[0]:
+            preamble = []
+            previous = heading.previous_sibling
+            while previous is not None:
+                if getattr(previous, "name", None) == split_tag:
+                    break
+                preamble.insert(0, previous)
+                previous = previous.previous_sibling
+            nodes_to_move = preamble + nodes_to_move
+
+        for node in nodes_to_move:
+            fragment_body.append(node.extract())
+
+        chapters.append({
+            "title": heading.get_text(strip=True) or "Saved Article",
+            "anchor_id": heading.get("id", f"ch-{len(chapters) + 1}"),
+            "html_fragment": _serialize_xhtml_children(fragment_body),
+            "level": split_level,
+        })
+
+    return chapters
+
+
+def _build_ncx_nav_points(
+    soup: BeautifulSoup,
+    fallback_title: str,
+    toc_max_depth: int,
+    multi_chapter: bool,
+) -> Tuple[str, int]:
+    """Build hierarchical NCX navPoint XML and return it with total navPoint count."""
+    body = soup.body if soup.body else soup
+    toc_max_depth = max(1, min(int(toc_max_depth), 6))
+
+    play_order = 0
+    nav_point_count = 0
+
+    def render_nav_point(nav_id: str, title: str, src: str, children_xml: str = "") -> str:
+        nonlocal play_order, nav_point_count
+        play_order += 1
+        nav_point_count += 1
+        escaped_title = _xml_escape_text(title)
+        return (
+            f'    <navPoint id="{nav_id}" playOrder="{play_order}">\n'
+            f'      <navLabel>\n'
+            f'        <text>{escaped_title}</text>\n'
+            f'      </navLabel>\n'
+            f'      <content src="{src}"/>\n'
+            f'{children_xml}'
+            f'    </navPoint>\n'
+        )
+
+    nav_map_parts = []
+    h1_tags = body.find_all("h1")
+
+    if not h1_tags:
+        src = "article.xhtml"
+        nav_map_parts.append(render_nav_point("navpoint-1", fallback_title, src))
+        return "".join(nav_map_parts), nav_point_count
+
+    for h1_index, h1 in enumerate(h1_tags, start=1):
+        if multi_chapter:
+            src = f"chapter-{h1_index:02d}.xhtml#{h1.get('id', f'ch-{h1_index}')}"
+        else:
+            anchor = h1.get("id")
+            src = f"article.xhtml#{anchor}" if anchor else "article.xhtml"
+
+        children_xml = ""
+        if toc_max_depth >= 2:
+            next_h1 = h1_tags[h1_index] if h1_index < len(h1_tags) else None
+            child_parts = []
+            for h2_index, h2 in enumerate(_find_headings_in_range(h1, next_h1, "h2"), start=1):
+                h2_anchor = h2.get("id", f"ch-{h1_index}-sec-{h2_index}")
+                if multi_chapter:
+                    h2_src = f"chapter-{h1_index:02d}.xhtml#{h2_anchor}"
+                else:
+                    h2_src = f"article.xhtml#{h2_anchor}"
+                child_parts.append(
+                    render_nav_point(
+                        f"navpoint-h1-{h1_index}-h2-{h2_index}",
+                        h2.get_text(strip=True) or f"Section {h2_index}",
+                        h2_src,
+                    )
+                )
+            children_xml = "".join(child_parts)
+
+        nav_map_parts.append(
+            render_nav_point(
+                f"navpoint-h1-{h1_index}",
+                h1.get_text(strip=True) or f"Chapter {h1_index}",
+                src,
+                children_xml=children_xml,
+            )
+        )
+
+    return "".join(nav_map_parts), nav_point_count
+
+
+def validate_epub_structure(epub_bytes: bytes) -> list[str]:
+    """
+    Validate structural requirements of an in-memory EPUB archive.
+
+    Returns a list of warning strings; an empty list means the EPUB passed
+    all checks.
+    """
+    warnings: list[str] = []
+
+    try:
+        with zipfile.ZipFile(io.BytesIO(epub_bytes), "r") as epub:
+            namelist = epub.namelist()
+
+            if not namelist:
+                warnings.append("EPUB archive is empty")
+                return warnings
+
+            if namelist[0] != "mimetype":
+                warnings.append("mimetype must be the first ZIP entry")
+
+            if "mimetype" in namelist:
+                mimetype_info = epub.getinfo("mimetype")
+                if mimetype_info.compress_type != zipfile.ZIP_STORED:
+                    warnings.append("mimetype entry must use ZIP_STORED compression")
+                try:
+                    mimetype_body = epub.read("mimetype").decode("utf-8").strip()
+                except Exception as exc:
+                    warnings.append(f"failed to read mimetype: {exc}")
+                else:
+                    if mimetype_body != "application/epub+zip":
+                        warnings.append(
+                            'mimetype content must be exactly "application/epub+zip"'
+                        )
+            else:
+                warnings.append("missing required entry: mimetype")
+
+            required_entries = (
+                "META-INF/container.xml",
+                "OEBPS/content.opf",
+                "OEBPS/toc.ncx",
+                "OEBPS/style.css",
+            )
+            for entry in required_entries:
+                if entry not in namelist:
+                    warnings.append(f"missing required entry: {entry}")
+
+            xhtml_entries = [
+                name for name in namelist
+                if name.startswith("OEBPS/") and name.endswith(".xhtml")
+            ]
+            if not xhtml_entries:
+                warnings.append("missing required entry: at least one OEBPS/*.xhtml file")
+
+            xml_entries = ["OEBPS/content.opf", "OEBPS/toc.ncx", *xhtml_entries]
+            for entry in xml_entries:
+                if entry not in namelist:
+                    continue
+                try:
+                    ET.parse(io.BytesIO(epub.read(entry)))
+                except ET.ParseError as exc:
+                    warnings.append(f"malformed XML in {entry}: {exc}")
+                except Exception as exc:
+                    warnings.append(f"failed to parse XML in {entry}: {exc}")
+
+    except zipfile.BadZipFile:
+        warnings.append("invalid ZIP archive")
+    except Exception as exc:
+        warnings.append(f"failed to open EPUB archive: {exc}")
+
+    return warnings
+
+
+def build_epub_debug_report(epub_bytes: bytes) -> dict[str, Any]:
+    """Collect EPUB fidelity stats and validation warnings for debug export."""
+    validation_warnings = validate_epub_structure(epub_bytes)
+    chapter_count = 0
+    image_count = 0
+    math_ml_count = 0
+
+    with zipfile.ZipFile(io.BytesIO(epub_bytes), "r") as epub:
+        for name in epub.namelist():
+            if name.startswith("OEBPS/") and name.endswith(".xhtml"):
+                chapter_count += 1
+                try:
+                    xhtml = epub.read(name).decode("utf-8", errors="replace")
+                except Exception:
+                    continue
+                math_ml_count += xhtml.count("<math")
+            elif name.startswith("OEBPS/images/") and not name.endswith("/"):
+                image_count += 1
+
+    return {
+        "chapter_count": chapter_count,
+        "image_count": image_count,
+        "math_ml_count": math_ml_count,
+        "validation_warnings": validation_warnings,
+    }
+
+
 class EPUBConverter(BaseConverter):
     """
     Converts HTML content to a self-contained EPUB ebook containing downloaded images.
@@ -1957,7 +2342,13 @@ class EPUBConverter(BaseConverter):
     def file_extension(self) -> str:
         return ".epub"
 
-    async def convert(self, html_content: str, base_url: str, article_slug: str) -> bytes:
+    async def convert(
+        self,
+        html_content: str,
+        base_url: str,
+        article_slug: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> bytes:
         # 1. Preprocess HTML
         html_content = preprocess_html(html_content)
         
@@ -2132,12 +2523,52 @@ class EPUBConverter(BaseConverter):
         for table in soup.find_all("table"):
             table.wrap(soup.new_tag("div", attrs={"class": "table-container"}))
             
-        # Get title from h1
+        split_at = config.EPUB_SPLIT_AT
+        toc_max_depth = config.EPUB_TOC_MAX_DEPTH
+        body = soup.body if soup.body else soup
+        split_tag = _normalize_split_tag(split_at)
+        _assign_stable_heading_ids(soup, toc_max_depth=toc_max_depth)
+        multi_chapter = len(body.find_all(split_tag)) > 1
+
+        # Resolve EPUB metadata (dc:title, dc:date, dc:language, dc:creator)
+        md = metadata or {}
         h1_tag = soup.find("h1")
-        title_text = h1_tag.get_text() if h1_tag else "Saved Article"
-        
-        # Build XHTML content
-        xhtml_content = self._build_xhtml(title_text, soup)
+        title_text = md.get("title") or (h1_tag.get_text() if h1_tag else "Saved Article")
+        language = md.get("language") or detect_language(html_content)
+        creator = md.get("creator") or md.get("author") or "Read It Later"
+        date_text = md.get("date") or datetime.date.today().strftime("%Y-%m-%d")
+        escaped_title = _xml_escape_text(title_text)
+        escaped_creator = _xml_escape_text(str(creator))
+        escaped_date = _xml_escape_text(str(date_text))
+        escaped_language = _xml_escape_text(str(language))
+
+        nav_map_xml, _nav_point_count = _build_ncx_nav_points(
+            soup,
+            title_text,
+            toc_max_depth=toc_max_depth,
+            multi_chapter=multi_chapter,
+        )
+        ncx_depth = str(max(1, min(int(toc_max_depth), 6)))
+
+        chapters = split_html_into_chapters(
+            soup,
+            split_at=split_at,
+            toc_max_depth=toc_max_depth,
+            assign_ids=False,
+        )
+
+        if multi_chapter:
+            chapter_xhtml_files = []
+            for index, chapter in enumerate(chapters, start=1):
+                chapter_xhtml_files.append((
+                    f"OEBPS/chapter-{index:02d}.xhtml",
+                    self._build_xhtml(chapter["title"], chapter["html_fragment"], language=language),
+                ))
+        else:
+            chapter_xhtml_files = [(
+                "OEBPS/article.xhtml",
+                self._build_xhtml(title_text, chapters[0]["html_fragment"], language=language),
+            )]
         
         # Pack everything into an EPUB zip in memory
         epub_io = io.BytesIO()
@@ -2234,8 +2665,20 @@ class EPUBConverter(BaseConverter):
             )
             epub.writestr("OEBPS/style.css", style_css)
             
-            # 4. article.xhtml
-            epub.writestr("OEBPS/article.xhtml", xhtml_content)
+            # 4. Chapter XHTML files
+            manifest_chapters = []
+            spine_itemrefs = []
+            for index, (chapter_path, chapter_xhtml) in enumerate(chapter_xhtml_files, start=1):
+                epub.writestr(chapter_path, chapter_xhtml)
+                chapter_href = chapter_path.replace("OEBPS/", "")
+                if multi_chapter:
+                    chapter_id = f"chapter-{index:02d}"
+                else:
+                    chapter_id = "content"
+                manifest_chapters.append(
+                    f'<item id="{chapter_id}" href="{chapter_href}" media-type="application/xhtml+xml"/>'
+                )
+                spine_itemrefs.append(f'    <itemref idref="{chapter_id}"/>')
             
             # 5. Pack images
             manifest_images = []
@@ -2252,20 +2695,15 @@ class EPUBConverter(BaseConverter):
                 '<ncx xmlns="http://www.daisy.org/z3986/2005/ncx/" version="2005-1">\n'
                 '  <head>\n'
                 f'    <meta name="dtb:uid" content="urn:uuid:{book_uuid}"/>\n'
-                '    <meta name="dtb:depth" content="1"/>\n'
+                f'    <meta name="dtb:depth" content="{ncx_depth}"/>\n'
                 '    <meta name="dtb:totalPageCount" content="0"/>\n'
                 '    <meta name="dtb:maxPageNumber" content="0"/>\n'
                 '  </head>\n'
                 '  <docTitle>\n'
-                f'    <text>{title_text}</text>\n'
+                f'    <text>{escaped_title}</text>\n'
                 '  </docTitle>\n'
                 '  <navMap>\n'
-                '    <navPoint id="navpoint-1" playOrder="1">\n'
-                '      <navLabel>\n'
-                f'        <text>{title_text}</text>\n'
-                '      </navLabel>\n'
-                '      <content src="article.xhtml"/>\n'
-                '    </navPoint>\n'
+                f'{nav_map_xml}'
                 '  </navMap>\n'
                 '</ncx>'
             )
@@ -2273,24 +2711,26 @@ class EPUBConverter(BaseConverter):
             
             # 7. content.opf
             manifest_img_str = "\n    ".join(manifest_images)
+            manifest_chapter_str = "\n    ".join(manifest_chapters)
+            spine_itemref_str = "\n".join(spine_itemrefs)
             content_opf = (
                 '<?xml version="1.0" encoding="UTF-8"?>\n'
                 '<package xmlns="http://www.idpf.org/2007/opf" unique-identifier="BookId" version="2.0">\n'
                 '  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:opf="http://www.idpf.org/2007/opf">\n'
-                f'    <dc:title>{title_text}</dc:title>\n'
-                '    <dc:language>ru</dc:language>\n'
+                f'    <dc:title>{escaped_title}</dc:title>\n'
+                f'    <dc:language>{escaped_language}</dc:language>\n'
                 f'    <dc:identifier id="BookId">urn:uuid:{book_uuid}</dc:identifier>\n'
-                '    <dc:creator>Read It Later</dc:creator>\n'
-                '    <dc:date>2026-05-30</dc:date>\n'
+                f'    <dc:creator>{escaped_creator}</dc:creator>\n'
+                f'    <dc:date>{escaped_date}</dc:date>\n'
                 '  </metadata>\n'
                 '  <manifest>\n'
                 '    <item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/>\n'
                 '    <item id="style" href="style.css" media-type="text/css"/>\n'
-                '    <item id="content" href="article.xhtml" media-type="application/xhtml+xml"/>\n'
+                f'    {manifest_chapter_str}\n'
                 f'    {manifest_img_str}\n'
                 '  </manifest>\n'
                 '  <spine toc="ncx">\n'
-                '    <itemref idref="content"/>\n'
+                f'{spine_itemref_str}\n'
                 '  </spine>\n'
                 '</package>'
             )
@@ -2298,23 +2738,30 @@ class EPUBConverter(BaseConverter):
             
         return epub_io.getvalue()
 
-    def _build_xhtml(self, title: str, soup: BeautifulSoup) -> str:
+    def _build_xhtml(self, title: str, body_content_or_soup, language: str = "en") -> str:
         """
         Build valid XHTML file content for the article.
         """
-        body_content = ""
-        if soup.body:
-            body_content = "".join(str(child) for child in soup.body.children)
+        escaped_title = _xml_escape_text(title)
+        escaped_language = _xml_escape_text(language)
+        if isinstance(body_content_or_soup, str):
+            body_content = body_content_or_soup
+        elif isinstance(body_content_or_soup, BeautifulSoup):
+            soup = body_content_or_soup
+            if soup.body:
+                body_content = _serialize_xhtml_children(soup.body)
+            else:
+                body_content = _serialize_xhtml_children(soup)
         else:
-            body_content = str(soup)
+            body_content = _serialize_xhtml_children(body_content_or_soup)
             
         return (
             '<?xml version="1.0" encoding="UTF-8"?>\n'
             '<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN" "http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd">\n'
-            '<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="ru">\n'
+            f'<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="{escaped_language}">\n'
             '<head>\n'
             '  <meta http-equiv="Content-Type" content="application/xhtml+xml; charset=utf-8" />\n'
-            f'  <title>{title}</title>\n'
+            f'  <title>{escaped_title}</title>\n'
             '  <link rel="stylesheet" href="style.css" type="text/css" />\n'
             '</head>\n'
             '<body>\n'

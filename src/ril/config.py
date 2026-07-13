@@ -46,3 +46,17 @@ CRAWLER_TIMEOUT_MS = int(os.getenv("RIL_CRAWLER_TIMEOUT_MS", "30000"))
 # Image extraction setting
 DISABLE_IMAGES = os.getenv("RIL_DISABLE_IMAGES", "false").lower() == "true"
 
+# When true, PDF imports also write a .html_clean cache via md_to_html_fallback
+CACHE_PDF_HTML = os.getenv("RIL_CACHE_PDF_HTML", "false").lower() == "true"
+
+# EPUB chapter splitting and table of contents depth
+_epub_split_at = os.getenv("RIL_EPUB_SPLIT_AT", "h1").lower()
+EPUB_SPLIT_AT = _epub_split_at if _epub_split_at in ("h1", "h2") else "h1"
+EPUB_TOC_MAX_DEPTH = int(os.getenv("RIL_EPUB_TOC_MAX_DEPTH", "2"))
+
+# EPUB language override (auto-detect Cyrillic ratio -> ru else en when unset)
+EPUB_LANGUAGE = os.getenv("RIL_EPUB_LANGUAGE") or None
+
+# When true, EPUB export writes {slug}.epub.report.json with fidelity stats
+RIL_EPUB_DEBUG = os.getenv("RIL_EPUB_DEBUG", "false").lower() == "true"
+

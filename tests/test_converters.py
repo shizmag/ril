@@ -434,6 +434,30 @@ async def test_epub_converter_basic(mocker, setup_test_environment):
         assert 'src="images/img_0.png"' in article_xhtml
 
 
+def test_preprocess_formulas_semantic_math_wrappers():
+    from bs4 import BeautifulSoup
+    from ril.converters import preprocess_formulas
+
+    html = (
+        '<p>Inline <span class="math-inline" data-latex="E=mc^2"></span> here.</p>'
+        '<div class="math-block" data-latex="a^2 + b^2 = c^2"></div>'
+    )
+    soup = BeautifulSoup(html, "lxml")
+
+    preprocess_formulas(soup, to_markdown=False)
+    result = str(soup)
+    assert "math-inline" not in result
+    assert "math-block" not in result
+    assert "xmlns=\"http://www.w3.org/1998/Math/MathML\"" in result
+    assert "<math" in result
+
+    soup_md = BeautifulSoup(html, "lxml")
+    preprocess_formulas(soup_md, to_markdown=True)
+    md_result = str(soup_md)
+    assert "$E=mc^2$" in md_result
+    assert "$$a^2 + b^2 = c^2$$" in md_result
+
+
 @pytest.mark.asyncio
 async def test_epub_converter_math_and_tables(mocker, setup_test_environment):
     from ril.converters import EPUBConverter
@@ -467,6 +491,148 @@ async def test_epub_converter_math_and_tables(mocker, setup_test_environment):
         assert "table-container" in article_xhtml
         # Formula image tags are replaced with MathML, so no formula images are in EPUB
         assert "images/img_" not in article_xhtml
+
+
+def test_detect_language_cyrillic_and_english():
+    from ril.converters import detect_language
+
+    assert detect_language("Hello world, this is English text.") == "en"
+    assert detect_language("Привет мир, это русский текст для проверки языка.") == "ru"
+
+
+def test_detect_language_respects_env_override(monkeypatch):
+    from ril import config
+    from ril.converters import detect_language
+
+    monkeypatch.setattr(config, "EPUB_LANGUAGE", "de")
+    assert detect_language("Привет мир") == "de"
+
+
+@pytest.mark.asyncio
+async def test_epub_converter_metadata_in_content_opf(setup_test_environment):
+    from ril.converters import EPUBConverter
+    import zipfile
+    import io
+
+    converter = EPUBConverter()
+    html = "<h1>Fallback Title</h1><p>English paragraph.</p>"
+    metadata = {
+        "title": "Custom EPUB Title",
+        "date": "2024-03-15",
+        "language": "en",
+        "creator": "Jane Author",
+    }
+
+    epub_bytes = await converter.convert(
+        html, "https://example.com", "test-epub-meta", metadata=metadata
+    )
+
+    with zipfile.ZipFile(io.BytesIO(epub_bytes)) as z:
+        content_opf = z.read("OEBPS/content.opf").decode("utf-8")
+        assert "<dc:title>Custom EPUB Title</dc:title>" in content_opf
+        assert "<dc:date>2024-03-15</dc:date>" in content_opf
+        assert "<dc:language>en</dc:language>" in content_opf
+        assert "<dc:creator>Jane Author</dc:creator>" in content_opf
+
+        article_xhtml = z.read("OEBPS/article.xhtml").decode("utf-8")
+        assert 'xml:lang="en"' in article_xhtml
+
+
+def test_split_html_into_chapters_multi_h1():
+    from bs4 import BeautifulSoup
+    from ril.converters import split_html_into_chapters
+
+    html = (
+        "<h1>Chapter One</h1><p>Content 1.</p>"
+        "<h2>Section 1.1</h2><p>Subcontent.</p>"
+        "<h1>Chapter Two</h1><p>Content 2.</p>"
+        "<h1>Chapter Three</h1><p>Content 3.</p>"
+    )
+    soup = BeautifulSoup(html, "lxml")
+    chapters = split_html_into_chapters(soup, split_at="h1", toc_max_depth=2)
+
+    assert len(chapters) == 3
+    assert chapters[0]["title"] == "Chapter One"
+    assert chapters[1]["title"] == "Chapter Two"
+    assert chapters[2]["title"] == "Chapter Three"
+    assert chapters[0]["anchor_id"] == "ch-1"
+    assert "Content 1." in chapters[0]["html_fragment"]
+    assert "Section 1.1" in chapters[0]["html_fragment"]
+    assert 'id="ch-1-sec-1"' in chapters[0]["html_fragment"]
+
+
+@pytest.mark.asyncio
+async def test_epub_converter_multi_chapter(setup_test_environment):
+    from ril.converters import EPUBConverter
+    import zipfile
+    import io
+
+    converter = EPUBConverter()
+    html = (
+        "<h1>Chapter One</h1><p>Content 1.</p>"
+        "<h2>Section 1.1</h2><p>Subcontent.</p>"
+        "<h1>Chapter Two</h1><p>Content 2.</p>"
+        "<h1>Chapter Three</h1><p>Content 3.</p>"
+    )
+
+    epub_bytes = await converter.convert(html, "https://example.com", "test-epub-multi")
+    assert isinstance(epub_bytes, bytes)
+
+    with zipfile.ZipFile(io.BytesIO(epub_bytes)) as z:
+        namelist = z.namelist()
+        assert "OEBPS/chapter-01.xhtml" in namelist
+        assert "OEBPS/chapter-02.xhtml" in namelist
+        assert "OEBPS/chapter-03.xhtml" in namelist
+        assert "OEBPS/article.xhtml" not in namelist
+
+        toc_ncx = z.read("OEBPS/toc.ncx").decode("utf-8")
+        assert toc_ncx.count("<navPoint") >= 4
+        assert "chapter-01.xhtml#ch-1" in toc_ncx
+        assert "chapter-01.xhtml#ch-1-sec-1" in toc_ncx
+        assert "chapter-02.xhtml#ch-2" in toc_ncx
+        assert "chapter-03.xhtml#ch-3" in toc_ncx
+
+        content_opf = z.read("OEBPS/content.opf").decode("utf-8")
+        assert 'href="chapter-01.xhtml"' in content_opf
+        assert 'href="chapter-02.xhtml"' in content_opf
+        assert 'href="chapter-03.xhtml"' in content_opf
+        assert 'idref="chapter-01"' in content_opf
+        assert 'idref="chapter-02"' in content_opf
+        assert 'idref="chapter-03"' in content_opf
+
+        chapter_one = z.read("OEBPS/chapter-01.xhtml").decode("utf-8")
+        assert "Chapter One" in chapter_one
+        assert "Section 1.1" in chapter_one
+        assert 'id="ch-1"' in chapter_one
+        assert "Chapter Two" not in chapter_one
+
+
+@pytest.mark.asyncio
+async def test_epub_converter_xml_escaping(setup_test_environment):
+    import re
+    import zipfile
+    import io
+    from ril.converters import EPUBConverter
+
+    converter = EPUBConverter()
+    html = "<h1>AT&T</h1><p>a & b</p>"
+
+    epub_bytes = await converter.convert(html, "https://example.com", "test-epub-escape")
+    raw_ampersand = re.compile(r"&(?!amp;|lt;|gt;|quot;|apos;|#\d+;|#x[0-9a-fA-F]+;)")
+
+    with zipfile.ZipFile(io.BytesIO(epub_bytes)) as z:
+        for xml_name in ("OEBPS/content.opf", "OEBPS/toc.ncx", "OEBPS/article.xhtml"):
+            xml_content = z.read(xml_name).decode("utf-8")
+            assert raw_ampersand.search(xml_content) is None, f"Unescaped & in {xml_name}"
+
+        content_opf = z.read("OEBPS/content.opf").decode("utf-8")
+        toc_ncx = z.read("OEBPS/toc.ncx").decode("utf-8")
+        article_xhtml = z.read("OEBPS/article.xhtml").decode("utf-8")
+
+        assert "AT&amp;T" in content_opf
+        assert "AT&amp;T" in toc_ncx
+        assert "AT&amp;T" in article_xhtml
+        assert "a &amp; b" in article_xhtml
 
 
 def test_image_optimization_transparency():
