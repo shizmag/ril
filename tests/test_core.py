@@ -347,3 +347,26 @@ async def test_process_url_routing_logic(mocker, setup_test_environment):
     assert mock_marker.called
 
 
+@pytest.mark.asyncio
+async def test_process_url_playwright_launch_error_not_misclassified(mocker, setup_test_environment):
+    # Mock detect_pdf_url_or_content to return False (HTML page)
+    mocker.patch("ril.core.detect_pdf_url_or_content", return_value=False)
+    
+    # Mock fetch_html to raise a Playwright browser launch error containing 'download'
+    launch_error = Exception(
+        "BrowserType.launch: Executable doesn't exist at /path/to/chrome\n"
+        "Please run the following command to download new browsers: playwright install"
+    )
+    mocker.patch("ril.core.fetch_html", side_effect=launch_error)
+    
+    # Mock download_pdf to raise if mistakenly called
+    mock_download_pdf = mocker.patch("ril.core.download_pdf")
+    
+    with pytest.raises(Exception) as exc_info:
+        await core.process_url("https://example.com/some-page")
+        
+    assert "Executable doesn't exist" in str(exc_info.value)
+    mock_download_pdf.assert_not_called()
+
+
+

@@ -225,7 +225,8 @@ async def process_url(
             try:
                 html = await fetch_html(url, rasterize_svg=rasterize_svg)
             except Exception as e:
-                if "Download is starting" in str(e) or "download" in str(e).lower():
+                err_msg = str(e).lower()
+                if ("download is starting" in err_msg or "download triggered" in err_msg) and "playwright install" not in err_msg:
                     is_pdf = True
                     try:
                         temp_pdf_path = download_pdf(url)
