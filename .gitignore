@@ -31,3 +31,4 @@ ril-daemon/target/
 src/library/*
 .ctx-codegraph/
 .ctx_*/
+output/
