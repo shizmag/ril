@@ -15,6 +15,7 @@ from ril.converters import (
     classify_pdf_image_role,
     collapse_split_display_math,
     embed_pdf_images_in_markdown,
+    is_dollar_delimited_math,
     looks_like_latex,
     normalize_marker_latex,
     normalize_pdf_markdown,
@@ -40,6 +41,16 @@ def test_looks_like_latex_detects_marker_alt_text():
     assert not looks_like_latex("image")
     assert not looks_like_latex("")
     assert not looks_like_latex(r"\$0.06")
+
+
+def test_is_dollar_delimited_math_accepts_short_vars_rejects_currency():
+    assert is_dollar_delimited_math("e")
+    assert is_dollar_delimited_math("n")
+    assert is_dollar_delimited_math(r"E = mc^2")
+    assert is_dollar_delimited_math(r"\frac{a}{b}")
+    assert not is_dollar_delimited_math("19.99")
+    assert not is_dollar_delimited_math("5000")
+    assert not is_dollar_delimited_math("")
 
 
 def test_normalize_marker_latex_strips_inline_prefix():
@@ -233,6 +244,16 @@ def test_md_to_html_fallback_preserves_escaped_currency():
     html = core.md_to_html_fallback(md, "Currency")
     assert "$0.06" in html or "\\$0.06" in html
     assert "math-inline" not in html
+
+
+def test_md_to_html_fallback_wraps_single_letter_math():
+    html = core.md_to_html_fallback(
+        "The definition of $e$ uses a series.",
+        "Euler",
+    )
+    assert 'class="math-inline"' in html
+    assert 'data-latex="e"' in html
+    assert "$e$" not in html
 
 
 def test_validate_and_normalize_math_converts_paren_delimiters():

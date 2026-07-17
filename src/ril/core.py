@@ -642,7 +642,7 @@ def md_to_html_fallback(md_content: str, title: str) -> str:
     import re
     import markdown
     import html as _html
-    from ril.converters import looks_like_latex, validate_and_normalize_math
+    from ril.converters import is_dollar_delimited_math, validate_and_normalize_math
 
     if not md_content:
         md_content = ""
@@ -686,7 +686,7 @@ def md_to_html_fallback(md_content: str, title: str) -> str:
     def repl_inline_dollar(match):
         nonlocal placeholder_count
         latex = match.group(1)
-        if not looks_like_latex(latex) and not re.search(r"[\\_{^=]", latex):
+        if not is_dollar_delimited_math(latex):
             return match.group(0)
         ph = f"MATHINLINEPLACEHOLDER{placeholder_count}"
         placeholder_count += 1

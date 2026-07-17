@@ -585,6 +585,28 @@ def looks_like_latex(text: str) -> bool:
     return False
 
 
+def is_dollar_delimited_math(inner: str) -> bool:
+    """
+    Return True when content inside $...$ should be treated as mathematics.
+
+    More permissive than looks_like_latex for short academic tokens (e.g. $e$,
+    $n$, $α$) while rejecting bare currency amounts like $19.99 or $5000.
+    """
+    inner = (inner or "").strip()
+    if not inner:
+        return False
+    if inner.startswith("\\$"):
+        return False
+    if looks_like_latex(inner):
+        return True
+    if re.search(r"[\\_{^=]", inner):
+        return True
+    # Single-letter / short math variables (Latin, Greek); optional prime/factorial.
+    if re.fullmatch(r"[A-Za-zΑ-Ωα-ω][!']?", inner):
+        return True
+    return False
+
+
 def normalize_marker_latex(latex: str) -> str:
     """Normalize LaTeX emitted by marker-pdf before conversion."""
     latex = (latex or "").strip()
@@ -950,9 +972,7 @@ def _parse_text_math_segment(segment: str) -> Optional[tuple[str, bool]]:
         return segment[2:-2].strip(), True
     if segment.startswith("$") and segment.endswith("$") and len(segment) >= 2:
         inner = segment[1:-1].strip()
-        if inner.startswith("\\$"):
-            return None
-        if not looks_like_latex(inner) and not re.search(r"[\\_{^=]", inner):
+        if not is_dollar_delimited_math(inner):
             return None
         return inner, False
     return None
@@ -1054,8 +1074,9 @@ def convert_latex_to_mathml(latex_code: str, display: str = "inline") -> Beautif
             logger.debug(f"LaTeX conversion attempt failed for {candidate!r}: {e}")
 
     logger.error(f"Failed to convert LaTeX to MathML after {len(candidates)} attempts: {last_error}")
-    safe = html.escape(sanitized or normalized, quote=True)
-    fallback_body = html.escape(sanitized or normalized)
+    fallback_src = sanitized or repaired or (latex_code or "")
+    safe = html.escape(fallback_src, quote=True)
+    fallback_body = html.escape(fallback_src)
     fallback = BeautifulSoup(
         f'<span class="math-fallback" data-latex="{safe}">{fallback_body}</span>',
         "xml",
@@ -2755,6 +2776,68 @@ def _build_ncx_nav_points(
     return "".join(nav_map_parts), nav_point_count
 
 
+def _build_epub3_nav_ol(
+    soup: BeautifulSoup,
+    fallback_title: str,
+    toc_max_depth: int,
+    multi_chapter: bool,
+) -> Tuple[str, int]:
+    """Build EPUB 3 nav document ordered-list markup and return it with entry count."""
+    body = soup.body if soup.body else soup
+    toc_max_depth = max(1, min(int(toc_max_depth), 6))
+    entry_count = 0
+
+    def li(href: str, label: str, children: str = "") -> str:
+        nonlocal entry_count
+        entry_count += 1
+        escaped = _xml_escape_text(label)
+        if children:
+            return (
+                f'      <li><a href="{href}">{escaped}</a>\n'
+                f'        <ol>\n{children}        </ol>\n'
+                f'      </li>\n'
+            )
+        return f'      <li><a href="{href}">{escaped}</a></li>\n'
+
+    parts: List[str] = []
+    h1_tags = body.find_all("h1")
+    if not h1_tags:
+        parts.append(li("article.xhtml", fallback_title))
+        return "".join(parts), entry_count
+
+    for h1_index, h1 in enumerate(h1_tags, start=1):
+        if multi_chapter:
+            href = f"chapter-{h1_index:02d}.xhtml#{h1.get('id', f'ch-{h1_index}')}"
+        else:
+            anchor = h1.get("id")
+            href = f"article.xhtml#{anchor}" if anchor else "article.xhtml"
+
+        children = ""
+        if toc_max_depth >= 2:
+            next_h1 = h1_tags[h1_index] if h1_index < len(h1_tags) else None
+            child_parts = []
+            for h2_index, h2 in enumerate(_find_headings_in_range(h1, next_h1, "h2"), start=1):
+                h2_anchor = h2.get("id", f"ch-{h1_index}-sec-{h2_index}")
+                if multi_chapter:
+                    h2_href = f"chapter-{h1_index:02d}.xhtml#{h2_anchor}"
+                else:
+                    h2_href = f"article.xhtml#{h2_anchor}"
+                child_parts.append(
+                    li(h2_href, h2.get_text(strip=True) or f"Section {h2_index}")
+                )
+            children = "".join(child_parts)
+
+        parts.append(
+            li(
+                href,
+                h1.get_text(strip=True) or f"Chapter {h1_index}",
+                children=children,
+            )
+        )
+
+    return "".join(parts), entry_count
+
+
 def validate_epub_structure(epub_bytes: bytes) -> list[str]:
     """
     Validate structural requirements of an in-memory EPUB archive.
@@ -2795,6 +2878,7 @@ def validate_epub_structure(epub_bytes: bytes) -> list[str]:
                 "META-INF/container.xml",
                 "OEBPS/content.opf",
                 "OEBPS/toc.ncx",
+                "OEBPS/nav.xhtml",
                 "OEBPS/style.css",
             )
             for entry in required_entries:
@@ -2805,8 +2889,20 @@ def validate_epub_structure(epub_bytes: bytes) -> list[str]:
                 name for name in namelist
                 if name.startswith("OEBPS/") and name.endswith(".xhtml")
             ]
-            if not xhtml_entries:
-                warnings.append("missing required entry: at least one OEBPS/*.xhtml file")
+            chapter_xhtml = [n for n in xhtml_entries if n != "OEBPS/nav.xhtml"]
+            if not chapter_xhtml:
+                warnings.append("missing required entry: at least one OEBPS/*.xhtml chapter file")
+
+            if "OEBPS/content.opf" in namelist:
+                try:
+                    opf_body = epub.read("OEBPS/content.opf").decode("utf-8", errors="replace")
+                except Exception as exc:
+                    warnings.append(f"failed to read content.opf: {exc}")
+                else:
+                    if 'version="3.0"' not in opf_body and "version='3.0'" not in opf_body:
+                        warnings.append('content.opf package version should be "3.0" for EPUB 3')
+                    if 'properties="nav"' not in opf_body and "properties='nav'" not in opf_body:
+                        warnings.append("content.opf missing nav item properties=\"nav\"")
 
             xml_entries = ["OEBPS/content.opf", "OEBPS/toc.ncx", *xhtml_entries]
             for entry in xml_entries:
@@ -2838,6 +2934,9 @@ def build_epub_debug_report(epub_bytes: bytes) -> dict[str, Any]:
     with zipfile.ZipFile(io.BytesIO(epub_bytes), "r") as epub:
         for name in epub.namelist():
             if name.startswith("OEBPS/") and name.endswith(".xhtml"):
+                # EPUB 3 nav document is not a reading-order chapter.
+                if name == "OEBPS/nav.xhtml" or name.endswith("/nav.xhtml"):
+                    continue
                 chapter_count += 1
                 try:
                     xhtml = epub.read(name).decode("utf-8", errors="replace")
@@ -3072,7 +3171,16 @@ class EPUBConverter(BaseConverter):
             toc_max_depth=toc_max_depth,
             multi_chapter=multi_chapter,
         )
+        nav_ol_xml, _nav_ol_count = _build_epub3_nav_ol(
+            soup,
+            title_text,
+            toc_max_depth=toc_max_depth,
+            multi_chapter=multi_chapter,
+        )
         ncx_depth = str(max(1, min(int(toc_max_depth), 6)))
+        modified_ts = datetime.datetime.now(datetime.timezone.utc).strftime(
+            "%Y-%m-%dT%H:%M:%SZ"
+        )
 
         chapters = split_html_into_chapters(
             soup,
@@ -3186,6 +3294,20 @@ class EPUBConverter(BaseConverter):
                 '  overflow-x: auto;\n'
                 '  margin: 1.5em 0;\n'
                 '}\n'
+                'math {\n'
+                '  font-family: "STIX Two Math", "Cambria Math", "Latin Modern Math", serif;\n'
+                '}\n'
+                'math[display="block"] {\n'
+                '  display: block;\n'
+                '  margin: 1em 0;\n'
+                '  text-align: center;\n'
+                '  overflow-x: auto;\n'
+                '}\n'
+                '.math-fallback {\n'
+                '  font-family: "Latin Modern Math", "STIX Two Math", serif;\n'
+                '  font-style: italic;\n'
+                '  white-space: pre-wrap;\n'
+                '}\n'
             )
             epub.writestr("OEBPS/style.css", style_css)
             
@@ -3232,23 +3354,50 @@ class EPUBConverter(BaseConverter):
                 '</ncx>'
             )
             epub.writestr("OEBPS/toc.ncx", toc_ncx)
+
+            # 6b. EPUB 3 navigation document (required for EPUB 3)
+            nav_xhtml = (
+                '<?xml version="1.0" encoding="UTF-8"?>\n'
+                '<!DOCTYPE html>\n'
+                '<html xmlns="http://www.w3.org/1999/xhtml" '
+                'xmlns:epub="http://www.idpf.org/2007/ops" '
+                f'xml:lang="{escaped_language}" lang="{escaped_language}">\n'
+                '<head>\n'
+                '  <meta charset="utf-8"/>\n'
+                f'  <title>Table of Contents — {escaped_title}</title>\n'
+                '  <link rel="stylesheet" type="text/css" href="style.css"/>\n'
+                '</head>\n'
+                '<body>\n'
+                '  <nav epub:type="toc" id="toc" role="doc-toc">\n'
+                '    <h1>Table of Contents</h1>\n'
+                '    <ol>\n'
+                f'{nav_ol_xml}'
+                '    </ol>\n'
+                '  </nav>\n'
+                '</body>\n'
+                '</html>'
+            )
+            epub.writestr("OEBPS/nav.xhtml", nav_xhtml)
             
-            # 7. content.opf
+            # 7. content.opf (EPUB 3 package document; NCX retained for legacy readers)
             manifest_img_str = "\n    ".join(manifest_images)
             manifest_chapter_str = "\n    ".join(manifest_chapters)
             spine_itemref_str = "\n".join(spine_itemrefs)
             content_opf = (
                 '<?xml version="1.0" encoding="UTF-8"?>\n'
-                '<package xmlns="http://www.idpf.org/2007/opf" unique-identifier="BookId" version="2.0">\n'
-                '  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:opf="http://www.idpf.org/2007/opf">\n'
+                '<package xmlns="http://www.idpf.org/2007/opf" '
+                'unique-identifier="BookId" version="3.0" prefix="dcterms: http://purl.org/dc/terms/">\n'
+                '  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">\n'
                 f'    <dc:title>{escaped_title}</dc:title>\n'
                 f'    <dc:language>{escaped_language}</dc:language>\n'
                 f'    <dc:identifier id="BookId">urn:uuid:{book_uuid}</dc:identifier>\n'
                 f'    <dc:creator>{escaped_creator}</dc:creator>\n'
                 f'    <dc:date>{escaped_date}</dc:date>\n'
+                f'    <meta property="dcterms:modified">{modified_ts}</meta>\n'
                 '  </metadata>\n'
                 '  <manifest>\n'
                 '    <item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/>\n'
+                '    <item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>\n'
                 '    <item id="style" href="style.css" media-type="text/css"/>\n'
                 f'    {manifest_chapter_str}\n'
                 f'    {manifest_img_str}\n'
@@ -3264,7 +3413,7 @@ class EPUBConverter(BaseConverter):
 
     def _build_xhtml(self, title: str, body_content_or_soup, language: str = "en") -> str:
         """
-        Build valid XHTML file content for the article.
+        Build valid EPUB 3 XHTML (polyglot) chapter content.
         """
         escaped_title = _xml_escape_text(title)
         escaped_language = _xml_escape_text(language)
@@ -3281,12 +3430,14 @@ class EPUBConverter(BaseConverter):
             
         return (
             '<?xml version="1.0" encoding="UTF-8"?>\n'
-            '<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN" "http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd">\n'
-            f'<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="{escaped_language}">\n'
+            '<!DOCTYPE html>\n'
+            f'<html xmlns="http://www.w3.org/1999/xhtml" '
+            f'xmlns:epub="http://www.idpf.org/2007/ops" '
+            f'xml:lang="{escaped_language}" lang="{escaped_language}">\n'
             '<head>\n'
-            '  <meta http-equiv="Content-Type" content="application/xhtml+xml; charset=utf-8" />\n'
+            '  <meta charset="utf-8"/>\n'
             f'  <title>{escaped_title}</title>\n'
-            '  <link rel="stylesheet" href="style.css" type="text/css" />\n'
+            '  <link rel="stylesheet" href="style.css" type="text/css"/>\n'
             '</head>\n'
             '<body>\n'
             f'{body_content}\n'
